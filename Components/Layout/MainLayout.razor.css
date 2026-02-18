@@ -1,0 +1,52 @@
+.main-content {
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+}
+
+.top-nav-link {
+    text-transform: none;
+    font-weight: 600;
+}
+
+.top-appbar {
+    background: linear-gradient(90deg, #253851 0%, #1f3e55 55%, #2d395d 100%) !important;
+    color: #e8edf7 !important;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.top-appbar .mud-button-root,
+.top-appbar .mud-icon-button,
+.top-appbar .mud-menu {
+    color: #e8edf7 !important;
+}
+
+.top-nav-link:hover {
+    background-color: rgba(148, 163, 184, 0.14);
+}
+
+#blazor-error-ui {
+    color-scheme: dark only;
+    background: #2a130f;
+    color: #fecaca;
+    border-top: 1px solid rgba(248, 113, 113, 0.35);
+    bottom: 0;
+    box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.28);
+    box-sizing: border-box;
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
+    position: fixed;
+    width: 100%;
+    z-index: 1200;
+}
+
+#blazor-error-ui .reload {
+    color: #93c5fd;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.75rem;
+    top: 0.5rem;
+}

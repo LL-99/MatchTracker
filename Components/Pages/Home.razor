@@ -1,0 +1,74 @@
+﻿@page "/"
+
+@inject MatchTrackerService Tracker
+@inject IJSRuntime JS
+
+<PageTitle>Overview</PageTitle>
+
+<MudStack Spacing="3">
+    <MudText Typo="Typo.h4">Player Overview</MudText>
+
+    @if (!_isReady)
+    {
+        <MudStack Row="true" Justify="Justify.Center" Class="mt-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        </MudStack>
+    }
+    else if (SummaryRows.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">
+            No players yet. Add players first, then start tracking matches.
+        </MudAlert>
+    }
+    else
+    {
+        <MudGrid Class="player-grid">
+            @foreach (var player in SummaryRows)
+            {
+                <MudItem xs="12" sm="6" md="4" lg="3">
+                    <MudPaper Class="player-cell pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="player-name">@player.Name</MudText>
+                        <MudDivider Class="my-2" />
+                        <MudStack Row="true" Class="stats-row">
+                            <div class="stat-item">
+                                <MudText Typo="Typo.body2">Wins</MudText>
+                                <MudAvatar Color="Color.Success" Size="Size.Large" Class="stat-value">@player.Wins</MudAvatar>
+                            </div>
+                            <div class="stat-item">
+                                <MudText Typo="Typo.body2">Losses</MudText>
+                                <MudAvatar Color="Color.Error" Size="Size.Large" Class="stat-value">@player.Losses</MudAvatar>
+                            </div>
+                            <div class="stat-item">
+                                <MudText Typo="Typo.body2">Draws</MudText>
+                                <MudAvatar Color="Color.Warning" Size="Size.Large" Class="stat-value">@player.Draws</MudAvatar>
+                            </div>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            }
+        </MudGrid>
+    }
+</MudStack>
+
+@code {
+    private bool _isReady;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _isReady = true;
+        StateHasChanged();
+    }
+
+    private IReadOnlyList<PlayerSummary> SummaryRows =>
+        Tracker.GetPlayerSummaries()
+            .OrderByDescending(summary => summary.Wins)
+            .ThenBy(summary => summary.Losses)
+            .ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+}

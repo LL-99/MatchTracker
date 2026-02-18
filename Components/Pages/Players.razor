@@ -1,0 +1,261 @@
+@page "/players"
+
+@inject MatchTrackerService Tracker
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+<PageTitle>Players</PageTitle>
+
+<MudStack Spacing="3">
+    <MudText Typo="Typo.h4">Players</MudText>
+
+    @if (!_isReady)
+    {
+        <MudStack Row="true" Justify="Justify.Center" Class="mt-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        </MudStack>
+    }
+    else
+    {
+        <MudPaper Class="pa-4">
+            <MudStack Row="true" Spacing="2">
+                <MudTextField T="string"
+                              Label="Player name"
+                              Placeholder="e.g. Alex"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              @bind-Value="_newPlayerName"
+                              OnKeyDown="HandleNameKeyDown" />
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           OnClick="AddPlayer">
+                    Add Player
+                </MudButton>
+            </MudStack>
+        </MudPaper>
+
+        @if (PlayerList.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Add at least two players to start recording matches.
+            </MudAlert>
+        }
+        else
+        {
+            <MudTable T="Player" Items="PlayerList" Hover="true" Dense="true">
+                <HeaderContent>
+                    <MudTh>
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => player.Name))">
+                            Player
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).MatchesPlayed))">
+                            Matches
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Wins))">
+                            Wins
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Losses))">
+                            Losses
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Draws))">
+                            Draws
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Player">
+                        @if (_editingPlayerId == context.Id)
+                        {
+                            <MudTextField T="string"
+                                          Variant="Variant.Outlined"
+                                          Margin="Margin.Dense"
+                                          @bind-Value="_editingPlayerName"
+                                          OnKeyDown="@(args => HandleRenameKeyDown(args, context))" />
+                        }
+                        else
+                        {
+                            @context.Name
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Matches" Style="text-align: right;">@GetSummary(context.Id).MatchesPlayed</MudTd>
+                    <MudTd DataLabel="Wins" Style="text-align: right;">@GetSummary(context.Id).Wins</MudTd>
+                    <MudTd DataLabel="Losses" Style="text-align: right;">@GetSummary(context.Id).Losses</MudTd>
+                    <MudTd DataLabel="Draws" Style="text-align: right;">@GetSummary(context.Id).Draws</MudTd>
+                    <MudTd>
+                        <MudStack Row="true" Spacing="1">
+                            @if (_editingPlayerId == context.Id)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Check"
+                                               Color="Color.Success"
+                                               Size="Size.Small"
+                                               OnClick="@(() => SaveRenamePlayerAsync(context))"
+                                               AriaLabel="Save player name" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                               Color="Color.Default"
+                                               Size="Size.Small"
+                                               OnClick="CancelRename"
+                                               AriaLabel="Cancel rename" />
+                            }
+                            else
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                               Color="Color.Primary"
+                                               Size="Size.Small"
+                                               OnClick="@(() => BeginRename(context))"
+                                               AriaLabel="Rename player" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                               Color="Color.Error"
+                                               Size="Size.Small"
+                                               OnClick="@(() => ConfirmRemovePlayerAsync(context))"
+                                               AriaLabel="Remove player" />
+                            }
+                        </MudStack>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    }
+</MudStack>
+
+@code {
+    private string _newPlayerName = string.Empty;
+    private Guid? _editingPlayerId;
+    private string _editingPlayerName = string.Empty;
+    private bool _isReady;
+
+    private IReadOnlyList<Player> PlayerList => Tracker.GetPlayers();
+
+    private IReadOnlyList<PlayerSummary> Summaries => Tracker.GetPlayerSummaries();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _isReady = true;
+        StateHasChanged();
+    }
+
+    private async Task HandleNameKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            await AddPlayer();
+        }
+    }
+
+    private async Task AddPlayer()
+    {
+        if (Tracker.TryAddPlayer(_newPlayerName, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            _newPlayerName = string.Empty;
+            Snackbar.Add("Player added.", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private void BeginRename(Player player)
+    {
+        _editingPlayerId = player.Id;
+        _editingPlayerName = player.Name;
+    }
+
+    private void CancelRename()
+    {
+        _editingPlayerId = null;
+        _editingPlayerName = string.Empty;
+    }
+
+    private async Task HandleRenameKeyDown(KeyboardEventArgs args, Player player)
+    {
+        if (args.Key == "Enter")
+        {
+            await SaveRenamePlayerAsync(player);
+        }
+        else if (args.Key == "Escape")
+        {
+            CancelRename();
+        }
+    }
+
+    private async Task SaveRenamePlayerAsync(Player player)
+    {
+        if (_editingPlayerId != player.Id)
+        {
+            return;
+        }
+
+        if (Tracker.TryRenamePlayer(player.Id, _editingPlayerName, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            Snackbar.Add("Player renamed.", Severity.Success);
+            CancelRename();
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private async Task ConfirmRemovePlayerAsync(Player player)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            title: "Remove Player",
+            message: $"Remove {player.Name}? Their recorded matches will also be deleted.",
+            yesText: "Remove",
+            noText: "Cancel",
+            options: new DialogOptions
+            {
+                MaxWidth = MaxWidth.ExtraSmall,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        if (Tracker.RemovePlayer(player.Id, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            if (_editingPlayerId == player.Id)
+            {
+                CancelRename();
+            }
+            Snackbar.Add($"{player.Name} removed.", Severity.Info);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private PlayerSummary GetSummary(Guid playerId)
+    {
+        return Summaries.FirstOrDefault(summary => summary.PlayerId == playerId)
+            ?? new PlayerSummary(playerId, Tracker.GetPlayerName(playerId), 0, 0, 0);
+    }
+}

@@ -1,0 +1,363 @@
+@page "/matches"
+
+@inject MatchTrackerService Tracker
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+<PageTitle>Matches</PageTitle>
+
+<MudStack Spacing="3">
+    <MudText Typo="Typo.h4">Matches</MudText>
+
+    @if (!_isReady)
+    {
+        <MudStack Row="true" Justify="Justify.Center" Class="mt-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        </MudStack>
+    }
+    else if (Players.Count < 2)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true">
+            You need at least two players before adding matches.
+        </MudAlert>
+    }
+    else
+    {
+        <MudPaper Class="pa-4">
+            <MudGrid>
+                <MudItem xs="12" md="4">
+                    <MudSelect T="Guid?"
+                               Label="Player"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               Value="_selectedPlayerId"
+                               ValueChanged="OnPlayerChanged">
+                        @foreach (var player in Players)
+                        {
+                            <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudSelect T="Guid?"
+                               Label="Opponent"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               @bind-Value="_selectedOpponentId">
+                        @foreach (var player in OpponentOptions)
+                        {
+                            <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudSelect T="MatchResult?"
+                               Label="Result for selected player"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               @bind-Value="_selectedResult">
+                        <MudSelectItem T="MatchResult?" Value="@MatchResult.Win">Win</MudSelectItem>
+                        <MudSelectItem T="MatchResult?" Value="@MatchResult.Loss">Loss</MudSelectItem>
+                        <MudSelectItem T="MatchResult?" Value="@MatchResult.Draw">Draw</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+            </MudGrid>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       OnClick="AddMatch">
+                Save Match
+            </MudButton>
+        </MudPaper>
+    }
+
+    @if (_isReady && _editingMatchId.HasValue && Players.Count >= 2)
+    {
+        <MudPaper Class="pa-4">
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.h6">Edit Match</MudText>
+                <MudGrid>
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="Guid?"
+                                   Label="Player"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense"
+                                   Value="_editPlayerId"
+                                   ValueChanged="OnEditPlayerChanged">
+                            @foreach (var player in Players)
+                            {
+                                <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="Guid?"
+                                   Label="Opponent"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense"
+                                   @bind-Value="_editOpponentId">
+                            @foreach (var player in EditOpponentOptions)
+                            {
+                                <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="MatchResult?"
+                                   Label="Result for selected player"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense"
+                                   @bind-Value="_editResult">
+                            <MudSelectItem T="MatchResult?" Value="@MatchResult.Win">Win</MudSelectItem>
+                            <MudSelectItem T="MatchResult?" Value="@MatchResult.Loss">Loss</MudSelectItem>
+                            <MudSelectItem T="MatchResult?" Value="@MatchResult.Draw">Draw</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                </MudGrid>
+
+                <MudStack Row="true" Spacing="1">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               OnClick="SaveEditedMatchAsync">
+                        Save Changes
+                    </MudButton>
+                    <MudButton Variant="Variant.Text"
+                               Color="Color.Default"
+                               OnClick="CancelEditMatch">
+                        Cancel
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    }
+
+    @if (_isReady && MatchRows.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">
+            No matches recorded yet.
+        </MudAlert>
+    }
+    else if (_isReady)
+    {
+        <MudTable Items="MatchRows" Hover="true" Dense="true">
+            <HeaderContent>
+                <MudTh>Player</MudTh>
+                <MudTh>Opponent</MudTh>
+                <MudTh>Result</MudTh>
+                <MudTh Style="text-align: right;">Played</MudTh>
+                <MudTh Style="text-align: right;"></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Player">@Tracker.GetPlayerName(context.PlayerId)</MudTd>
+                <MudTd DataLabel="Opponent">@Tracker.GetPlayerName(context.OpponentId)</MudTd>
+                <MudTd DataLabel="Result">@context.Result</MudTd>
+                <MudTd DataLabel="Played" Style="text-align: right;">@context.PlayedOnUtc.ToLocalTime().ToString("g")</MudTd>
+                <MudTd Style="text-align: right;">
+                    <MudStack Row="true" Spacing="1" Justify="Justify.FlexEnd">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       OnClick="@(() => BeginEditMatch(context))"
+                                       AriaLabel="Edit match" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Color="Color.Error"
+                                       Size="Size.Small"
+                                       OnClick="@(() => ConfirmRemoveMatchAsync(context))"
+                                       AriaLabel="Delete match" />
+                    </MudStack>
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+    }
+</MudStack>
+
+@code {
+    private Guid? _selectedPlayerId;
+    private Guid? _selectedOpponentId;
+    private MatchResult? _selectedResult = MatchResult.Win;
+    private Guid? _editingMatchId;
+    private Guid? _editPlayerId;
+    private Guid? _editOpponentId;
+    private MatchResult? _editResult = MatchResult.Win;
+    private bool _isReady;
+
+    private IReadOnlyList<Player> Players => Tracker.GetPlayers();
+
+    private IReadOnlyList<Player> OpponentOptions =>
+        Players.Where(player => !_selectedPlayerId.HasValue || player.Id != _selectedPlayerId.Value).ToList();
+
+    private IReadOnlyList<Player> EditOpponentOptions =>
+        Players.Where(player => !_editPlayerId.HasValue || player.Id != _editPlayerId.Value).ToList();
+
+    private IReadOnlyList<MatchRecord> MatchRows => Tracker.GetMatches();
+
+    protected override void OnParametersSet()
+    {
+        EnsureSelections();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _isReady = true;
+        EnsureSelections();
+        StateHasChanged();
+    }
+
+    private void OnPlayerChanged(Guid? selectedPlayerId)
+    {
+        _selectedPlayerId = selectedPlayerId;
+        EnsureSelections();
+    }
+
+    private void OnEditPlayerChanged(Guid? selectedPlayerId)
+    {
+        _editPlayerId = selectedPlayerId;
+        EnsureEditSelections();
+    }
+
+    private void EnsureSelections()
+    {
+        if (Players.Count < 2)
+        {
+            _selectedPlayerId = null;
+            _selectedOpponentId = null;
+            return;
+        }
+
+        if (!_selectedPlayerId.HasValue || Players.All(player => player.Id != _selectedPlayerId.Value))
+        {
+            _selectedPlayerId = Players[0].Id;
+        }
+
+        if (!_selectedOpponentId.HasValue
+            || _selectedOpponentId == _selectedPlayerId
+            || Players.All(player => player.Id != _selectedOpponentId.Value))
+        {
+            _selectedOpponentId = Players.First(player => player.Id != _selectedPlayerId.Value).Id;
+        }
+
+        _selectedResult ??= MatchResult.Win;
+        EnsureEditSelections();
+    }
+
+    private async Task AddMatch()
+    {
+        if (Tracker.TryAddMatch(_selectedPlayerId, _selectedOpponentId, _selectedResult, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            Snackbar.Add("Match added.", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private void BeginEditMatch(MatchRecord match)
+    {
+        _editingMatchId = match.Id;
+        _editPlayerId = match.PlayerId;
+        _editOpponentId = match.OpponentId;
+        _editResult = match.Result;
+        EnsureEditSelections();
+    }
+
+    private void CancelEditMatch()
+    {
+        _editingMatchId = null;
+        _editPlayerId = null;
+        _editOpponentId = null;
+        _editResult = MatchResult.Win;
+    }
+
+    private void EnsureEditSelections()
+    {
+        if (!_editingMatchId.HasValue)
+        {
+            return;
+        }
+
+        if (Players.Count < 2)
+        {
+            CancelEditMatch();
+            return;
+        }
+
+        if (!_editPlayerId.HasValue || Players.All(player => player.Id != _editPlayerId.Value))
+        {
+            _editPlayerId = Players[0].Id;
+        }
+
+        if (!_editOpponentId.HasValue
+            || _editOpponentId == _editPlayerId
+            || Players.All(player => player.Id != _editOpponentId.Value))
+        {
+            _editOpponentId = Players.First(player => player.Id != _editPlayerId.Value).Id;
+        }
+
+        _editResult ??= MatchResult.Win;
+    }
+
+    private async Task SaveEditedMatchAsync()
+    {
+        if (!_editingMatchId.HasValue)
+        {
+            return;
+        }
+
+        if (Tracker.TryUpdateMatch(_editingMatchId.Value, _editPlayerId, _editOpponentId, _editResult, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            Snackbar.Add("Match updated.", Severity.Success);
+            CancelEditMatch();
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private async Task ConfirmRemoveMatchAsync(MatchRecord match)
+    {
+        var playerName = Tracker.GetPlayerName(match.PlayerId);
+        var opponentName = Tracker.GetPlayerName(match.OpponentId);
+
+        var confirmed = await DialogService.ShowMessageBox(
+            title: "Delete Match",
+            message: $"Delete match {playerName} vs {opponentName} ({match.Result})?",
+            yesText: "Delete",
+            noText: "Cancel",
+            options: new DialogOptions
+            {
+                MaxWidth = MaxWidth.ExtraSmall,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        if (Tracker.RemoveMatch(match.Id, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            if (_editingMatchId == match.Id)
+            {
+                CancelEditMatch();
+            }
+            Snackbar.Add("Match deleted.", Severity.Info);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+}
