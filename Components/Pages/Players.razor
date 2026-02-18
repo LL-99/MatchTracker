@@ -75,9 +75,18 @@
                             Draws
                         </MudTableSortLabel>
                     </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).WinRate))">
+                            Win Rate
+                        </MudTableSortLabel>
+                    </MudTh>
                     <MudTh></MudTh>
                 </HeaderContent>
                 <RowTemplate>
+                    @{
+                        var summary = GetSummary(context.Id);
+                    }
                     <MudTd DataLabel="Player">
                         @if (_editingPlayerId == context.Id)
                         {
@@ -92,10 +101,11 @@
                             @context.Name
                         }
                     </MudTd>
-                    <MudTd DataLabel="Matches" Style="text-align: right;">@GetSummary(context.Id).MatchesPlayed</MudTd>
-                    <MudTd DataLabel="Wins" Style="text-align: right;">@GetSummary(context.Id).Wins</MudTd>
-                    <MudTd DataLabel="Losses" Style="text-align: right;">@GetSummary(context.Id).Losses</MudTd>
-                    <MudTd DataLabel="Draws" Style="text-align: right;">@GetSummary(context.Id).Draws</MudTd>
+                    <MudTd DataLabel="Matches" Style="text-align: right;">@summary.MatchesPlayed</MudTd>
+                    <MudTd DataLabel="Wins" Style="text-align: right;">@summary.Wins</MudTd>
+                    <MudTd DataLabel="Losses" Style="text-align: right;">@summary.Losses</MudTd>
+                    <MudTd DataLabel="Draws" Style="text-align: right;">@summary.Draws</MudTd>
+                    <MudTd DataLabel="Win Rate" Style="text-align: right;">@summary.WinRateLabel</MudTd>
                     <MudTd>
                         <MudStack Row="true" Spacing="1">
                             @if (_editingPlayerId == context.Id)

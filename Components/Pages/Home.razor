@@ -27,7 +27,10 @@
 			{
 				<MudItem xs="12" sm="6" md="4" lg="3">
 					<MudPaper Class="player-cell pa-4" Elevation="2">
-						<MudText Typo="Typo.h5" Class="player-name" Align="Align.Center">@player.Name</MudText>
+						<MudStack Row AlignItems="AlignItems.Center">
+							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
+							<MudText Typo="Typo.h5" Class="player-name" Align="Align.Center">@player.Name</MudText>
+						</MudStack>
 						<MudDivider Class="my-2" />
 						<MudGrid Justify="Justify.Center">
 							<MudItem>

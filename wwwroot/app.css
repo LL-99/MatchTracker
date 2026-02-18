@@ -18,3 +18,16 @@ a {
 a:hover {
     color: #bae6fd;
 }
+
+.win-rate-badge {
+    background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+    border-radius: 999px;
+    color: #022c22;
+    display: inline-flex;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    padding: 0.3rem 0.55rem;
+    text-transform: uppercase;
+}

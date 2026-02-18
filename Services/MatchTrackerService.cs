@@ -457,6 +457,9 @@ public sealed record PlayerSummary(
     int Draws)
 {
     public int MatchesPlayed => Wins + Losses + Draws;
+    public double WinRate => MatchesPlayed == 0 ? 0d : (double)Wins / MatchesPlayed;
+    public int WinRatePercent => (int)Math.Round(WinRate * 100, MidpointRounding.AwayFromZero);
+    public string WinRateLabel => $"{WinRatePercent}% WR";
 }
 
 public enum MatchResult

@@ -6,6 +6,8 @@
     border: 1px solid var(--mud-palette-lines-default);
     border-radius: 14px;
     height: 100%;
+    padding-top: 2.6rem !important;
+    position: relative;
     transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
@@ -40,4 +42,10 @@
     height: 3.2rem !important;
     line-height: 1 !important;
     width: 3.2rem !important;
+}
+
+.player-cell-rate {
+    left: 0.8rem;
+    position: absolute;
+    top: 0.7rem;
 }
