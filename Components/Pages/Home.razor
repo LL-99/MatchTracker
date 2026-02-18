@@ -22,6 +22,19 @@
 	}
 	else
 	{
+		<MudStack Row="true" Justify="Justify.FlexEnd" Class="mb-2">
+			<MudSelect T="OverviewSortMode"
+					   Label="Sort by"
+					   Variant="Variant.Outlined"
+					   Margin="Margin.Dense"
+					   Dense="true"
+					   @bind-Value="_sortMode">
+				<MudSelectItem Value="@OverviewSortMode.Alphabetic">Alphabetic</MudSelectItem>
+				<MudSelectItem Value="@OverviewSortMode.ByWinRate">By WR</MudSelectItem>
+				<MudSelectItem Value="@OverviewSortMode.ByPoints">By PT</MudSelectItem>
+			</MudSelect>
+		</MudStack>
+
 		<MudGrid Class="player-grid">
 			@foreach (var player in SummaryRows)
 			{
@@ -64,6 +77,7 @@
 
 @code {
 	private bool _isReady;
+	private OverviewSortMode _sortMode = OverviewSortMode.ByPoints;
 
 	protected override async Task OnAfterRenderAsync(bool firstRender)
 	{
@@ -78,9 +92,28 @@
 	}
 
 	private IReadOnlyList<PlayerSummary> SummaryRows =>
-		Tracker.GetPlayerSummaries()
-			.OrderByDescending(summary => summary.Wins)
-			.ThenBy(summary => summary.Losses)
-			.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
-			.ToList();
+		_sortMode switch
+		{
+			OverviewSortMode.Alphabetic => Tracker.GetPlayerSummaries()
+				.OrderBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+				.ThenBy(summary => summary.Name, StringComparer.Ordinal)
+				.ToList(),
+			OverviewSortMode.ByWinRate => Tracker.GetPlayerSummaries()
+				.OrderByDescending(summary => summary.WinRate)
+				.ThenByDescending(summary => summary.Score)
+				.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+				.ToList(),
+			_ => Tracker.GetPlayerSummaries()
+				.OrderByDescending(summary => summary.Score)
+				.ThenByDescending(summary => summary.WinRate)
+				.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+				.ToList()
+		};
+
+	private enum OverviewSortMode
+	{
+		Alphabetic,
+		ByWinRate,
+		ByPoints
+	}
 }
