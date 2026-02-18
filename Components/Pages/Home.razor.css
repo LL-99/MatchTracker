@@ -49,3 +49,9 @@
     position: absolute;
     top: 0.7rem;
 }
+
+.player-cell-score {
+    position: absolute;
+    right: 0.8rem;
+    top: 0.7rem;
+}

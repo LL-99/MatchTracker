@@ -53,6 +53,12 @@
                     </MudTh>
                     <MudTh Style="text-align: right;">
                         <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Score))">
+                            Score
+                        </MudTableSortLabel>
+                    </MudTh>
+                    <MudTh Style="text-align: right;">
+                        <MudTableSortLabel T="Player"
                                            SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).MatchesPlayed))">
                             Matches
                         </MudTableSortLabel>
@@ -101,6 +107,7 @@
                             @context.Name
                         }
                     </MudTd>
+                    <MudTd DataLabel="Score" Style="text-align: right;">@summary.Score</MudTd>
                     <MudTd DataLabel="Matches" Style="text-align: right;">@summary.MatchesPlayed</MudTd>
                     <MudTd DataLabel="Wins" Style="text-align: right;">@summary.Wins</MudTd>
                     <MudTd DataLabel="Losses" Style="text-align: right;">@summary.Losses</MudTd>

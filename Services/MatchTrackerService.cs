@@ -456,7 +456,13 @@ public sealed record PlayerSummary(
     int Losses,
     int Draws)
 {
+    public const int StartingScore = 100;
+    public const int WinPoints = 20;
+    public const int DrawPenalty = 5;
+    public const int LossPenalty = 15;
+
     public int MatchesPlayed => Wins + Losses + Draws;
+    public int Score => StartingScore + (Wins * WinPoints) - (Draws * DrawPenalty) - (Losses * LossPenalty);
     public double WinRate => MatchesPlayed == 0 ? 0d : (double)Wins / MatchesPlayed;
     public int WinRatePercent => (int)Math.Round(WinRate * 100, MidpointRounding.AwayFromZero);
     public string WinRateLabel => $"{WinRatePercent}% WR";
