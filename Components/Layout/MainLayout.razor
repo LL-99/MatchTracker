@@ -23,6 +23,9 @@
             Matches
         </MudButton>
         <MudMenu Icon="@Icons.Material.Filled.MoreVert" Color="Color.Inherit" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+            <MudMenuItem Icon="@Icons.Material.Filled.Settings" OnClick="TogglePointsUsageAsync">
+                @($"Use PT: {(IsPointsEnabled ? "On" : "Off")}")
+            </MudMenuItem>
             <MudMenuItem Icon="@Icons.Material.Filled.Download" OnClick="ExportDataAsync">
                 Export Data
             </MudMenuItem>
@@ -47,6 +50,7 @@
 
 @code {
     private const string ExportFileName = "match-tracker-data.json";
+    private bool _isInitialized;
     private static readonly MudTheme _darkTheme = new()
     {
         PaletteDark = new PaletteDark
@@ -69,6 +73,37 @@
             Info = "#38BDF8"
         }
     };
+    private bool IsPointsEnabled => Tracker.IsPointsEnabled();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _isInitialized = true;
+        StateHasChanged();
+    }
+
+    private async Task TogglePointsUsageAsync(MouseEventArgs _)
+    {
+        if (!_isInitialized)
+        {
+            await Tracker.EnsureInitializedAsync(JS);
+            _isInitialized = true;
+        }
+
+        var usePoints = !Tracker.IsPointsEnabled();
+        if (!Tracker.SetPointsEnabled(usePoints))
+        {
+            return;
+        }
+
+        await Tracker.PersistAsync(JS);
+        Snackbar.Add(usePoints ? "PT enabled." : "PT disabled.", Severity.Info);
+    }
 
     private async Task ExportDataAsync(MouseEventArgs _)
     {

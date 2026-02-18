@@ -1,4 +1,5 @@
 @page "/players"
+@implements IDisposable
 
 @inject MatchTrackerService Tracker
 @inject ISnackbar Snackbar
@@ -51,12 +52,15 @@
                             Player
                         </MudTableSortLabel>
                     </MudTh>
-                    <MudTh Style="text-align: right;">
-                        <MudTableSortLabel T="Player"
-                                           SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Score))">
-                            Score
-                        </MudTableSortLabel>
-                    </MudTh>
+                    @if (IsPointsEnabled)
+                    {
+                        <MudTh Style="text-align: right;">
+                            <MudTableSortLabel T="Player"
+                                               SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Score))">
+                                Score
+                            </MudTableSortLabel>
+                        </MudTh>
+                    }
                     <MudTh Style="text-align: right;">
                         <MudTableSortLabel T="Player"
                                            SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).MatchesPlayed))">
@@ -107,7 +111,10 @@
                             @context.Name
                         }
                     </MudTd>
-                    <MudTd DataLabel="Score" Style="text-align: right;">@summary.Score</MudTd>
+                    @if (IsPointsEnabled)
+                    {
+                        <MudTd DataLabel="Score" Style="text-align: right;">@summary.Score</MudTd>
+                    }
                     <MudTd DataLabel="Matches" Style="text-align: right;">@summary.MatchesPlayed</MudTd>
                     <MudTd DataLabel="Wins" Style="text-align: right;">@summary.Wins</MudTd>
                     <MudTd DataLabel="Losses" Style="text-align: right;">@summary.Losses</MudTd>
@@ -154,10 +161,16 @@
     private Guid? _editingPlayerId;
     private string _editingPlayerName = string.Empty;
     private bool _isReady;
+    private bool IsPointsEnabled => Tracker.IsPointsEnabled();
 
     private IReadOnlyList<Player> PlayerList => Tracker.GetPlayers();
 
     private IReadOnlyList<PlayerSummary> Summaries => Tracker.GetPlayerSummaries();
+
+    protected override void OnInitialized()
+    {
+        Tracker.OptionsChanged += HandleOptionsChanged;
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -274,5 +287,15 @@
     {
         return Summaries.FirstOrDefault(summary => summary.PlayerId == playerId)
             ?? new PlayerSummary(playerId, Tracker.GetPlayerName(playerId), 0, 0, 0);
+    }
+
+    public void Dispose()
+    {
+        Tracker.OptionsChanged -= HandleOptionsChanged;
+    }
+
+    private void HandleOptionsChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
     }
 }

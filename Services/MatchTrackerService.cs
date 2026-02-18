@@ -9,6 +9,7 @@ public sealed class MatchTrackerService
     private readonly object _sync = new();
     private MatchTrackerState _state = new();
     private bool _isInitialized;
+    public event Action? OptionsChanged;
 
     public async Task EnsureInitializedAsync(IJSRuntime jsRuntime)
     {
@@ -71,8 +72,38 @@ public sealed class MatchTrackerService
             _isInitialized = true;
         }
 
+        OptionsChanged?.Invoke();
         errorMessage = string.Empty;
         return true;
+    }
+
+    public bool IsPointsEnabled()
+    {
+        lock (_sync)
+        {
+            return _state.UsePoints;
+        }
+    }
+
+    public bool SetPointsEnabled(bool isEnabled)
+    {
+        var changed = false;
+
+        lock (_sync)
+        {
+            if (_state.UsePoints != isEnabled)
+            {
+                _state.UsePoints = isEnabled;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            OptionsChanged?.Invoke();
+        }
+
+        return changed;
     }
 
     public IReadOnlyList<Player> GetPlayers()
@@ -360,6 +391,7 @@ public sealed class MatchTrackerService
             return new MatchTrackerState
             {
                 SchemaVersion = _state.SchemaVersion,
+                UsePoints = _state.UsePoints,
                 Players = _state.Players.ToList(),
                 Matches = _state.Matches.ToList()
             };
@@ -427,6 +459,7 @@ public sealed class MatchTrackerService
         return new MatchTrackerState
         {
             SchemaVersion = parsedState.SchemaVersion,
+            UsePoints = parsedState.UsePoints,
             Players = players,
             Matches = matches
         };
@@ -436,6 +469,7 @@ public sealed class MatchTrackerService
 public sealed class MatchTrackerState
 {
     public int SchemaVersion { get; set; } = 1;
+    public bool UsePoints { get; set; } = true;
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
 }

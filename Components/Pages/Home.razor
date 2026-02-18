@@ -1,4 +1,5 @@
 ﻿@page "/"
+@implements IDisposable
 
 @inject MatchTrackerService Tracker
 @inject IJSRuntime JS
@@ -31,7 +32,10 @@
 					   @bind-Value="_sortMode">
 				<MudSelectItem Value="@OverviewSortMode.Alphabetic">Alphabetic</MudSelectItem>
 				<MudSelectItem Value="@OverviewSortMode.ByWinRate">By WR</MudSelectItem>
-				<MudSelectItem Value="@OverviewSortMode.ByPoints">By PT</MudSelectItem>
+				@if (IsPointsEnabled)
+				{
+					<MudSelectItem Value="@OverviewSortMode.ByPoints">By PT</MudSelectItem>
+				}
 			</MudSelect>
 		</MudStack>
 
@@ -44,8 +48,11 @@
 							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
 							<MudSpacer />
 							<MudText Typo="Typo.h5" Class="player-name" Align="Align.Center">@player.Name</MudText>
-							<MudSpacer/>
-							<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
+							<MudSpacer />
+							@if (IsPointsEnabled)
+							{
+								<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
+							}
 						</MudStack>
 						<MudDivider Class="my-2" />
 						<MudGrid Justify="Justify.Center">
@@ -78,6 +85,12 @@
 @code {
 	private bool _isReady;
 	private OverviewSortMode _sortMode = OverviewSortMode.ByPoints;
+	private bool IsPointsEnabled => Tracker.IsPointsEnabled();
+
+	protected override void OnInitialized()
+	{
+		Tracker.OptionsChanged += HandleOptionsChanged;
+	}
 
 	protected override async Task OnAfterRenderAsync(bool firstRender)
 	{
@@ -87,28 +100,59 @@
 		}
 
 		await Tracker.EnsureInitializedAsync(JS);
+		if (!IsPointsEnabled && _sortMode == OverviewSortMode.ByPoints)
+		{
+			_sortMode = OverviewSortMode.ByWinRate;
+		}
+
 		_isReady = true;
 		StateHasChanged();
 	}
 
-	private IReadOnlyList<PlayerSummary> SummaryRows =>
-		_sortMode switch
+	private IReadOnlyList<PlayerSummary> SummaryRows
+	{
+		get
 		{
-			OverviewSortMode.Alphabetic => Tracker.GetPlayerSummaries()
-				.OrderBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
-				.ThenBy(summary => summary.Name, StringComparer.Ordinal)
-				.ToList(),
-			OverviewSortMode.ByWinRate => Tracker.GetPlayerSummaries()
-				.OrderByDescending(summary => summary.WinRate)
-				.ThenByDescending(summary => summary.Score)
-				.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
-				.ToList(),
-			_ => Tracker.GetPlayerSummaries()
-				.OrderByDescending(summary => summary.Score)
-				.ThenByDescending(summary => summary.WinRate)
-				.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
-				.ToList()
-		};
+			var summaries = Tracker.GetPlayerSummaries();
+			var sortMode = _sortMode == OverviewSortMode.ByPoints && !IsPointsEnabled
+				? OverviewSortMode.ByWinRate
+				: _sortMode;
+
+			return sortMode switch
+			{
+				OverviewSortMode.Alphabetic => summaries
+					.OrderBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+					.ThenBy(summary => summary.Name, StringComparer.Ordinal)
+					.ToList(),
+				OverviewSortMode.ByWinRate => (IsPointsEnabled
+						? summaries.OrderByDescending(summary => summary.WinRate)
+							.ThenByDescending(summary => summary.Score)
+						: summaries.OrderByDescending(summary => summary.WinRate))
+					.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+					.ToList(),
+				_ => summaries
+					.OrderByDescending(summary => summary.Score)
+					.ThenByDescending(summary => summary.WinRate)
+					.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+					.ToList()
+			};
+		}
+	}
+
+	public void Dispose()
+	{
+		Tracker.OptionsChanged -= HandleOptionsChanged;
+	}
+
+	private void HandleOptionsChanged()
+	{
+		if (!IsPointsEnabled && _sortMode == OverviewSortMode.ByPoints)
+		{
+			_sortMode = OverviewSortMode.ByWinRate;
+		}
+
+		_ = InvokeAsync(StateHasChanged);
+	}
 
 	private enum OverviewSortMode
 	{
