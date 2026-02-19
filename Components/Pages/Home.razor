@@ -7,7 +7,7 @@
 <PageTitle>Overview</PageTitle>
 
 <MudStack Spacing="3">
-	<MudText Typo="Typo.h3" Align="Align.Center">Match Overview</MudText>
+	<MudText Typo="Typo.h3" Align="Align.Center">Scores</MudText>
 
 	@if (!_isReady)
 	{
@@ -23,6 +23,69 @@
 	}
 	else
 	{
+		var rows = SummaryRows.ToList();
+
+		<MudGrid Justify="Justify.Center">
+			@for (int i = 0; i < 3; i++)
+			{
+				var player = i switch
+				{
+					0 => rows[1],
+					1 => rows[0],
+					2 => rows[2]
+				};
+
+				int minHeight = i switch
+				{
+					0 => 275,
+					1 => 300,
+					2 => 260,
+				};
+
+				string color = i switch
+				{
+					0 => "#C0C0C0", // silver
+					1 => "#FFD700", // gold
+					2 => "#CD7F32", // bronze
+				};
+
+				<MudItem xs="3" Class="d-flex" Style="align-items:end;">
+					<MudPaper MinHeight=@($"{minHeight}px") Class="player-cell pa-4 border-solid border-2" Style=@($"border-color:{color};") Elevation="2">
+						<MudStack AlignItems="AlignItems.Center">
+							<MudText Typo="Typo.h4" Class="player-name" Align="Align.Center">@player.Name</MudText>
+							<MudSpacer />
+							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
+							@if (IsPointsEnabled)
+							{
+								<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
+							}
+						</MudStack>
+						<MudDivider Class="my-2" />
+						<MudGrid Justify="Justify.Center">
+							<MudItem>
+								<MudStack>
+									<MudText Align="Align.Center" Typo="Typo.body2">Wins</MudText>
+									<MudAvatar Color="Color.Success" Size="Size.Large" Class="stat-value">@player.Wins</MudAvatar>
+								</MudStack>
+							</MudItem>
+							<MudItem>
+								<MudStack>
+									<MudText Align="Align.Center" Typo="Typo.body2">Losses</MudText>
+									<MudAvatar Color="Color.Error" Size="Size.Large" Class="stat-value">@player.Losses</MudAvatar>
+								</MudStack>
+							</MudItem>
+							<MudItem>
+								<MudStack>
+									<MudText Align="Align.Center" Typo="Typo.body2">Draws</MudText>
+									<MudAvatar Color="Color.Warning" Size="Size.Large" Class="stat-value">@player.Draws</MudAvatar>
+								</MudStack>
+							</MudItem>
+						</MudGrid>
+					</MudPaper>
+				</MudItem>
+			}
+		</MudGrid>
+
 		<MudStack Row="true" Justify="Justify.FlexEnd" Class="mb-2">
 			<MudSelect T="OverviewSortMode"
 					   Label="Sort by"
@@ -40,8 +103,9 @@
 		</MudStack>
 
 		<MudGrid Class="player-grid">
-			@foreach (var player in SummaryRows)
+			@for (int i = 3; i < rows.Count; i++)
 			{
+				var player = rows[i];
 				<MudItem xs="12" sm="6" md="4" lg="3">
 					<MudPaper Class="player-cell pa-4" Elevation="2">
 						<MudStack Row AlignItems="AlignItems.Center">
