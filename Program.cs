@@ -1,5 +1,6 @@
 using MatchTracker.Components;
 using MatchTracker.Services;
+using MudBlazor;
 using MudBlazor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,7 +8,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
-builder.Services.AddMudServices();
+builder.Services.AddMudServices(options =>
+{
+    options.SnackbarConfiguration.PositionClass = Defaults.Classes.Position.BottomRight;
+});
 builder.Services.AddScoped<MatchTrackerService>();
 
 var app = builder.Build();
