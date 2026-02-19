@@ -8,20 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="Images\BronzeMedal.png" />
-    <None Remove="Images\SilverMedal.png" />
-    <None Remove="Images\Trophy.png" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="MudBlazor" Version="8.15.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Resource Include="Images\BronzeMedal.png" />
-    <Resource Include="Images\SilverMedal.png" />
-    <Resource Include="Images\Trophy.png" />
   </ItemGroup>
 
 </Project>
