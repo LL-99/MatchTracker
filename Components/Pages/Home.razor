@@ -45,10 +45,9 @@
 				<MudItem xs="12" sm="6" md="4" lg="3">
 					<MudPaper Class="player-cell pa-4" Elevation="2">
 						<MudStack Row AlignItems="AlignItems.Center">
-							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
-							<MudSpacer />
 							<MudText Typo="Typo.h5" Class="player-name" Align="Align.Center">@player.Name</MudText>
 							<MudSpacer />
+							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
 							@if (IsPointsEnabled)
 							{
 								<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
