@@ -111,6 +111,7 @@
 					   @bind-Value="_sortMode">
 				<MudSelectItem Value="@OverviewSortMode.Alphabetic">Alphabetic</MudSelectItem>
 				<MudSelectItem Value="@OverviewSortMode.ByWinRate">By WR</MudSelectItem>
+				<MudSelectItem Value="@OverviewSortMode.ByWins">By Wins</MudSelectItem>
 				@if (IsPointsEnabled)
 				{
 					<MudSelectItem Value="@OverviewSortMode.ByPoints">By PT</MudSelectItem>
@@ -207,6 +208,11 @@
 						? summaries.OrderByDescending(summary => summary.WinRate)
 							.ThenByDescending(summary => summary.Score)
 						: summaries.OrderByDescending(summary => summary.WinRate))
+					.ThenByDescending(summary => summary.Wins)
+					.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+					.ToList(),
+				OverviewSortMode.ByWins => summaries.OrderByDescending(summary => summary.Wins)
+					.ThenBy(summary => summary.WinRate)
 					.ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
 					.ToList(),
 				_ => summaries
@@ -237,6 +243,7 @@
 	{
 		Alphabetic,
 		ByWinRate,
-		ByPoints
+		ByPoints,
+		ByWins,
 	}
 }
