@@ -6,6 +6,7 @@ namespace MatchTracker.Services;
 public sealed class MatchTrackerService
 {
     private const string LocalStorageKey = "matchtracker.state.v1";
+    private const int TournamentHistoryLimit = 100;
     private readonly object _sync = new();
     private MatchTrackerState _state = new();
     private bool _isInitialized;
@@ -127,24 +128,156 @@ public sealed class MatchTrackerService
         }
     }
 
-    public TournamentBracketSnapshot? GetTournamentBracketSnapshot()
+    public TournamentSnapshot? GetCurrentTournamentSnapshot()
     {
         lock (_sync)
         {
-            return _state.TournamentBracket is null
+            return _state.CurrentTournament is null
                 ? null
-                : CloneTournamentBracket(_state.TournamentBracket);
+                : CloneTournament(_state.CurrentTournament);
         }
     }
 
-    public void SetTournamentBracketSnapshot(TournamentBracketSnapshot? bracketSnapshot)
+    public IReadOnlyList<TournamentHistorySummary> GetTournamentHistorySummaries()
     {
         lock (_sync)
         {
-            _state.TournamentBracket = bracketSnapshot is null
-                ? null
-                : CloneTournamentBracket(bracketSnapshot);
+            return _state.TournamentHistory
+                .OrderByDescending(summary => summary.ArchivedOnUtc)
+                .ThenByDescending(summary => summary.GeneratedOnUtc)
+                .Select(CloneTournamentHistorySummary)
+                .ToList();
         }
+    }
+
+    public void SetCurrentTournamentSnapshot(TournamentSnapshot? tournamentSnapshot)
+    {
+        lock (_sync)
+        {
+            var nextTournament = tournamentSnapshot is null
+                ? null
+                : CloneTournament(tournamentSnapshot);
+
+            nextTournament = SanitizeTournament(nextTournament);
+
+            if (_state.CurrentTournament is not null)
+            {
+                var replacingCurrent = nextTournament is null
+                    || nextTournament.TournamentId != _state.CurrentTournament.TournamentId;
+
+                if (replacingCurrent)
+                {
+                    ArchiveTournamentLocked(_state.CurrentTournament, DateTime.UtcNow);
+                }
+            }
+
+            _state.CurrentTournament = nextTournament;
+        }
+    }
+
+    public bool TryRecordTournamentMatchResult(
+        Guid tournamentId,
+        int roundNumber,
+        Guid tournamentMatchId,
+        MatchResult resultForPlayerA,
+        out string errorMessage)
+    {
+        lock (_sync)
+        {
+            if (_state.CurrentTournament is null)
+            {
+                errorMessage = "No active tournament found.";
+                return false;
+            }
+
+            if (_state.CurrentTournament.TournamentId != tournamentId)
+            {
+                errorMessage = "This tournament is no longer active.";
+                return false;
+            }
+
+            var round = _state.CurrentTournament.Rounds.FirstOrDefault(r => r.RoundNumber == roundNumber);
+            if (round is null)
+            {
+                errorMessage = "Round not found.";
+                return false;
+            }
+
+            var tournamentMatch = round.Matches.FirstOrDefault(match => match.MatchId == tournamentMatchId);
+            if (tournamentMatch is null)
+            {
+                errorMessage = "Tournament match not found.";
+                return false;
+            }
+
+            if (tournamentMatch.IsBye)
+            {
+                errorMessage = "Bye matches cannot be edited.";
+                return false;
+            }
+
+            if (!tournamentMatch.PlayerBId.HasValue || tournamentMatch.PlayerBId.Value == Guid.Empty)
+            {
+                errorMessage = "Opponent is missing for this match.";
+                return false;
+            }
+
+            var playerExists = _state.Players.Any(p => p.Id == tournamentMatch.PlayerAId);
+            var opponentExists = _state.Players.Any(p => p.Id == tournamentMatch.PlayerBId.Value);
+            if (!playerExists || !opponentExists)
+            {
+                errorMessage = "Both players must still exist before reporting this result.";
+                return false;
+            }
+
+            var nowUtc = DateTime.UtcNow;
+
+            if (tournamentMatch.RecordedMatchId.HasValue)
+            {
+                var matchIndex = _state.Matches.FindIndex(match => match.Id == tournamentMatch.RecordedMatchId.Value);
+                if (matchIndex >= 0)
+                {
+                    _state.Matches[matchIndex] = _state.Matches[matchIndex] with
+                    {
+                        PlayerId = tournamentMatch.PlayerAId,
+                        OpponentId = tournamentMatch.PlayerBId.Value,
+                        Result = resultForPlayerA
+                    };
+                }
+                else
+                {
+                    var created = new MatchRecord(
+                        Guid.NewGuid(),
+                        tournamentMatch.PlayerAId,
+                        tournamentMatch.PlayerBId.Value,
+                        resultForPlayerA,
+                        nowUtc);
+
+                    _state.Matches.Add(created);
+                    tournamentMatch.RecordedMatchId = created.Id;
+                }
+            }
+            else
+            {
+                var created = new MatchRecord(
+                    Guid.NewGuid(),
+                    tournamentMatch.PlayerAId,
+                    tournamentMatch.PlayerBId.Value,
+                    resultForPlayerA,
+                    nowUtc);
+
+                _state.Matches.Add(created);
+                tournamentMatch.RecordedMatchId = created.Id;
+            }
+
+            tournamentMatch.ResultForPlayerA = resultForPlayerA;
+            tournamentMatch.ReportedOnUtc = nowUtc;
+
+            UpdateTournamentCompletionLocked(_state.CurrentTournament, nowUtc);
+        }
+
+        errorMessage = string.Empty;
+        return true;
     }
 
     public IReadOnlyList<PlayerSummary> GetPlayerSummaries()
@@ -219,7 +352,32 @@ public sealed class MatchTrackerService
             }
 
             _state.Players.Remove(player);
-            _state.Matches.RemoveAll(match => match.PlayerId == playerId || match.OpponentId == playerId);
+            var removedMatchIds = _state.Matches
+                .Where(match => match.PlayerId == playerId || match.OpponentId == playerId)
+                .Select(match => match.Id)
+                .ToHashSet();
+
+            _state.Matches.RemoveAll(match => removedMatchIds.Contains(match.Id));
+
+            if (removedMatchIds.Count > 0 && _state.CurrentTournament is not null)
+            {
+                foreach (var tournamentMatch in _state.CurrentTournament.Rounds.SelectMany(round => round.Matches))
+                {
+                    if (!tournamentMatch.RecordedMatchId.HasValue || !removedMatchIds.Contains(tournamentMatch.RecordedMatchId.Value))
+                    {
+                        continue;
+                    }
+
+                    tournamentMatch.RecordedMatchId = null;
+                    if (!tournamentMatch.IsBye)
+                    {
+                        tournamentMatch.ResultForPlayerA = null;
+                        tournamentMatch.ReportedOnUtc = null;
+                    }
+                }
+
+                UpdateTournamentCompletionLocked(_state.CurrentTournament, DateTime.UtcNow);
+            }
         }
 
         errorMessage = string.Empty;
@@ -263,6 +421,18 @@ public sealed class MatchTrackerService
 
     public bool TryAddMatch(Guid? playerId, Guid? opponentId, MatchResult? result, out string errorMessage)
     {
+        return TryAddMatch(playerId, opponentId, result, out _, out errorMessage);
+    }
+
+    public bool TryAddMatch(
+        Guid? playerId,
+        Guid? opponentId,
+        MatchResult? result,
+        out Guid createdMatchId,
+        out string errorMessage)
+    {
+        createdMatchId = Guid.Empty;
+
         if (!playerId.HasValue || !opponentId.HasValue)
         {
             errorMessage = "Select both players before adding a match.";
@@ -292,12 +462,15 @@ public sealed class MatchTrackerService
                 return false;
             }
 
-            _state.Matches.Add(new MatchRecord(
+            var match = new MatchRecord(
                 Guid.NewGuid(),
                 playerId.Value,
                 opponentId.Value,
                 result.Value,
-                DateTime.UtcNow));
+                DateTime.UtcNow);
+
+            _state.Matches.Add(match);
+            createdMatchId = match.Id;
         }
 
         errorMessage = string.Empty;
@@ -342,12 +515,44 @@ public sealed class MatchTrackerService
                 return false;
             }
 
+            var nowUtc = DateTime.UtcNow;
             _state.Matches[matchIndex] = _state.Matches[matchIndex] with
             {
                 PlayerId = playerId.Value,
                 OpponentId = opponentId.Value,
                 Result = result.Value
             };
+
+            var currentTournament = _state.CurrentTournament;
+            if (currentTournament is not null)
+            {
+                foreach (var tournamentMatch in currentTournament.Rounds.SelectMany(round => round.Matches))
+                {
+                    if (tournamentMatch.RecordedMatchId != matchId || tournamentMatch.IsBye || !tournamentMatch.PlayerBId.HasValue)
+                    {
+                        continue;
+                    }
+
+                    if (tournamentMatch.PlayerAId == playerId.Value && tournamentMatch.PlayerBId.Value == opponentId.Value)
+                    {
+                        tournamentMatch.ResultForPlayerA = result.Value;
+                        tournamentMatch.ReportedOnUtc = nowUtc;
+                    }
+                    else if (tournamentMatch.PlayerAId == opponentId.Value && tournamentMatch.PlayerBId.Value == playerId.Value)
+                    {
+                        tournamentMatch.ResultForPlayerA = Reverse(result.Value);
+                        tournamentMatch.ReportedOnUtc = nowUtc;
+                    }
+                    else
+                    {
+                        tournamentMatch.RecordedMatchId = null;
+                        tournamentMatch.ResultForPlayerA = null;
+                        tournamentMatch.ReportedOnUtc = null;
+                    }
+                }
+
+                UpdateTournamentCompletionLocked(currentTournament, nowUtc);
+            }
         }
 
         errorMessage = string.Empty;
@@ -363,6 +568,25 @@ public sealed class MatchTrackerService
             {
                 errorMessage = "Match not found.";
                 return false;
+            }
+
+            var currentTournament = _state.CurrentTournament;
+            if (currentTournament is not null)
+            {
+                foreach (var tournamentMatch in currentTournament.Rounds.SelectMany(round => round.Matches))
+                {
+                    if (tournamentMatch.RecordedMatchId == matchId)
+                    {
+                        tournamentMatch.RecordedMatchId = null;
+                        if (!tournamentMatch.IsBye)
+                        {
+                            tournamentMatch.ResultForPlayerA = null;
+                            tournamentMatch.ReportedOnUtc = null;
+                        }
+                    }
+                }
+
+                UpdateTournamentCompletionLocked(currentTournament, DateTime.UtcNow);
             }
         }
 
@@ -414,9 +638,13 @@ public sealed class MatchTrackerService
                 UsePoints = _state.UsePoints,
                 Players = _state.Players.ToList(),
                 Matches = _state.Matches.ToList(),
-                TournamentBracket = _state.TournamentBracket is null
+                CurrentTournament = _state.CurrentTournament is null
                     ? null
-                    : CloneTournamentBracket(_state.TournamentBracket)
+                    : CloneTournament(_state.CurrentTournament),
+                TournamentHistory = _state.TournamentHistory
+                    .Select(CloneTournamentHistorySummary)
+                    .ToList(),
+                LegacyTournamentBracket = null
             };
         }
     }
@@ -452,7 +680,8 @@ public sealed class MatchTrackerService
     {
         parsedState.Players ??= new List<Player>();
         parsedState.Matches ??= new List<MatchRecord>();
-        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 1);
+        parsedState.TournamentHistory ??= new List<TournamentHistorySummary>();
+        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 2);
 
         var players = parsedState.Players
             .Where(player => player.Id != Guid.Empty)
@@ -474,9 +703,23 @@ public sealed class MatchTrackerService
                 && knownPlayerIds.Contains(match.PlayerId)
                 && knownPlayerIds.Contains(match.OpponentId))
             .Select(match => match.Id == Guid.Empty
-                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, match.PlayedOnUtc)
-                : match)
+                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, NormalizeUtc(match.PlayedOnUtc))
+                : match with { PlayedOnUtc = NormalizeUtc(match.PlayedOnUtc) })
             .OrderByDescending(match => match.PlayedOnUtc)
+            .ToList();
+
+        var tournament = SanitizeTournament(parsedState.CurrentTournament);
+        if (tournament is null && parsedState.LegacyTournamentBracket is not null)
+        {
+            tournament = ConvertLegacyBracket(parsedState.LegacyTournamentBracket);
+        }
+
+        var history = parsedState.TournamentHistory
+            .Select(SanitizeTournamentHistorySummary)
+            .Where(summary => summary is not null)
+            .Select(summary => summary!)
+            .OrderByDescending(summary => summary.ArchivedOnUtc)
+            .Take(TournamentHistoryLimit)
             .ToList();
 
         return new MatchTrackerState
@@ -485,20 +728,363 @@ public sealed class MatchTrackerService
             UsePoints = parsedState.UsePoints,
             Players = players,
             Matches = matches,
-            TournamentBracket = SanitizeTournamentBracket(parsedState.TournamentBracket)
+            CurrentTournament = tournament,
+            TournamentHistory = history,
+            LegacyTournamentBracket = null
         };
     }
 
-    private static TournamentBracketSnapshot CloneTournamentBracket(TournamentBracketSnapshot bracketSnapshot)
+    private static TournamentSnapshot CloneTournament(TournamentSnapshot tournament)
     {
-        return new TournamentBracketSnapshot
+        return new TournamentSnapshot
         {
-            MatchingMode = bracketSnapshot.MatchingMode,
-            RankMetric = bracketSnapshot.RankMetric,
-            GeneratedOnUtc = bracketSnapshot.GeneratedOnUtc,
-            Seeds = bracketSnapshot.Seeds
-                .Select(seed => seed with { })
+            TournamentId = tournament.TournamentId,
+            MatchingMode = tournament.MatchingMode,
+            RankMetric = tournament.RankMetric,
+            GeneratedOnUtc = tournament.GeneratedOnUtc,
+            CompletedOnUtc = tournament.CompletedOnUtc,
+            Seeds = tournament.Seeds.Select(seed => seed with { }).ToList(),
+            Rounds = tournament.Rounds
+                .Select(round => new TournamentRoundSnapshot
+                {
+                    RoundNumber = round.RoundNumber,
+                    Matches = round.Matches
+                        .Select(match => new TournamentMatchSnapshot
+                        {
+                            MatchId = match.MatchId,
+                            TableNumber = match.TableNumber,
+                            PlayerASeed = match.PlayerASeed,
+                            PlayerAId = match.PlayerAId,
+                            PlayerAName = match.PlayerAName,
+                            PlayerBSeed = match.PlayerBSeed,
+                            PlayerBId = match.PlayerBId,
+                            PlayerBName = match.PlayerBName,
+                            IsBye = match.IsBye,
+                            ResultForPlayerA = match.ResultForPlayerA,
+                            ReportedOnUtc = match.ReportedOnUtc,
+                            RecordedMatchId = match.RecordedMatchId
+                        })
+                        .ToList()
+                })
                 .ToList()
+        };
+    }
+
+    private static TournamentSnapshot? SanitizeTournament(TournamentSnapshot? parsedTournament)
+    {
+        if (parsedTournament is null)
+        {
+            return null;
+        }
+
+        parsedTournament.Seeds ??= new List<TournamentSeedSnapshot>();
+        parsedTournament.Rounds ??= new List<TournamentRoundSnapshot>();
+
+        var tournamentId = parsedTournament.TournamentId == Guid.Empty
+            ? Guid.NewGuid()
+            : parsedTournament.TournamentId;
+
+        var matchingMode = Enum.IsDefined(parsedTournament.MatchingMode)
+            ? parsedTournament.MatchingMode
+            : TournamentMatchingMode.ClassicSwissStage;
+
+        var rankMetric = Enum.IsDefined(parsedTournament.RankMetric)
+            ? parsedTournament.RankMetric
+            : TournamentRankMetric.WinRate;
+
+        var generatedOnUtc = NormalizeUtc(parsedTournament.GeneratedOnUtc);
+        DateTime? completedOnUtc = parsedTournament.CompletedOnUtc.HasValue
+            ? NormalizeUtc(parsedTournament.CompletedOnUtc.Value)
+            : null;
+
+        var seeds = parsedTournament.Seeds
+            .Where(seed => seed.Seed > 0 && seed.PlayerId != Guid.Empty)
+            .Select(seed =>
+            {
+                var name = (seed.Name ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return null;
+                }
+
+                var wins = Math.Max(seed.Wins, 0);
+                var losses = Math.Max(seed.Losses, 0);
+                var draws = Math.Max(seed.Draws, 0);
+
+                return new TournamentSeedSnapshot(
+                    seed.Seed,
+                    seed.PlayerId,
+                    name,
+                    wins,
+                    losses,
+                    draws,
+                    seed.Score,
+                    BuildWinRateLabel(wins, losses, draws));
+            })
+            .Where(seed => seed is not null)
+            .Select(seed => seed!)
+            .OrderBy(seed => seed.Seed)
+            .GroupBy(seed => seed.PlayerId)
+            .Select(group => group.First())
+            .OrderBy(seed => seed.Seed)
+            .ToList();
+
+        if (seeds.Count == 0)
+        {
+            return null;
+        }
+
+        var seedOrder = seeds.Select(seed => seed.PlayerId).ToHashSet();
+
+        var rounds = parsedTournament.Rounds
+            .Where(round => round.RoundNumber > 0)
+            .Select(round =>
+            {
+                round.Matches ??= new List<TournamentMatchSnapshot>();
+                var matches = round.Matches
+                    .Where(match => match.TableNumber > 0 && match.PlayerAId != Guid.Empty && !string.IsNullOrWhiteSpace(match.PlayerAName))
+                    .Select(match => SanitizeTournamentMatch(match, seedOrder))
+                    .Where(match => match is not null)
+                    .Select(match => match!)
+                    .OrderBy(match => match.TableNumber)
+                    .ToList();
+
+                return new TournamentRoundSnapshot
+                {
+                    RoundNumber = round.RoundNumber,
+                    Matches = matches
+                };
+            })
+            .Where(round => round.Matches.Count > 0)
+            .GroupBy(round => round.RoundNumber)
+            .Select(group => group.First())
+            .OrderBy(round => round.RoundNumber)
+            .ToList();
+
+        if (rounds.Count == 0)
+        {
+            return null;
+        }
+
+        var sanitized = new TournamentSnapshot
+        {
+            TournamentId = tournamentId,
+            MatchingMode = matchingMode,
+            RankMetric = rankMetric,
+            GeneratedOnUtc = generatedOnUtc,
+            CompletedOnUtc = completedOnUtc,
+            Seeds = seeds,
+            Rounds = rounds
+        };
+
+        UpdateTournamentCompletionLocked(sanitized, DateTime.UtcNow);
+        return sanitized;
+    }
+
+    private static TournamentMatchSnapshot? SanitizeTournamentMatch(
+        TournamentMatchSnapshot parsedMatch,
+        IReadOnlySet<Guid> seededPlayerIds)
+    {
+        var playerAName = (parsedMatch.PlayerAName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(playerAName))
+        {
+            return null;
+        }
+
+        if (!seededPlayerIds.Contains(parsedMatch.PlayerAId))
+        {
+            return null;
+        }
+
+        var isBye = parsedMatch.IsBye || !parsedMatch.PlayerBId.HasValue || parsedMatch.PlayerBId.Value == Guid.Empty;
+
+        Guid? playerBId = null;
+        int? playerBSeed = null;
+        string? playerBName = null;
+        MatchResult? result = parsedMatch.ResultForPlayerA;
+
+        if (!isBye)
+        {
+            if (parsedMatch.PlayerBId == parsedMatch.PlayerAId)
+            {
+                return null;
+            }
+
+            var normalizedPlayerBName = (parsedMatch.PlayerBName ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalizedPlayerBName))
+            {
+                return null;
+            }
+
+            if (!seededPlayerIds.Contains(parsedMatch.PlayerBId.Value))
+            {
+                return null;
+            }
+
+            playerBId = parsedMatch.PlayerBId.Value;
+            playerBSeed = parsedMatch.PlayerBSeed.GetValueOrDefault();
+            playerBName = normalizedPlayerBName;
+
+            if (result.HasValue && !Enum.IsDefined(result.Value))
+            {
+                result = null;
+            }
+        }
+        else
+        {
+            result = MatchResult.Win;
+        }
+
+        return new TournamentMatchSnapshot
+        {
+            MatchId = parsedMatch.MatchId == Guid.Empty ? Guid.NewGuid() : parsedMatch.MatchId,
+            TableNumber = parsedMatch.TableNumber,
+            PlayerASeed = Math.Max(parsedMatch.PlayerASeed, 1),
+            PlayerAId = parsedMatch.PlayerAId,
+            PlayerAName = playerAName,
+            PlayerBSeed = playerBSeed,
+            PlayerBId = playerBId,
+            PlayerBName = playerBName,
+            IsBye = isBye,
+            ResultForPlayerA = result,
+            ReportedOnUtc = parsedMatch.ReportedOnUtc.HasValue
+                ? NormalizeUtc(parsedMatch.ReportedOnUtc.Value)
+                : null,
+            RecordedMatchId = parsedMatch.RecordedMatchId == Guid.Empty
+                ? null
+                : parsedMatch.RecordedMatchId
+        };
+    }
+
+    private static TournamentSnapshot? ConvertLegacyBracket(TournamentBracketSnapshot legacyBracket)
+    {
+        var sanitizedBracket = SanitizeTournamentBracket(legacyBracket);
+        if (sanitizedBracket is null)
+        {
+            return null;
+        }
+
+        var roundMatches = BuildClassicSwissRound(sanitizedBracket.Seeds, sanitizedBracket.GeneratedOnUtc);
+
+        return new TournamentSnapshot
+        {
+            TournamentId = Guid.NewGuid(),
+            MatchingMode = sanitizedBracket.MatchingMode,
+            RankMetric = sanitizedBracket.RankMetric,
+            GeneratedOnUtc = sanitizedBracket.GeneratedOnUtc,
+            CompletedOnUtc = null,
+            Seeds = sanitizedBracket.Seeds.Select(seed => seed with { }).ToList(),
+            Rounds = new List<TournamentRoundSnapshot>
+            {
+                new()
+                {
+                    RoundNumber = 1,
+                    Matches = roundMatches
+                }
+            }
+        };
+    }
+
+    private static List<TournamentMatchSnapshot> BuildClassicSwissRound(
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
+    {
+        var matches = new List<TournamentMatchSnapshot>();
+        if (seededPlayers.Count == 0)
+        {
+            return matches;
+        }
+
+        var topHalfSize = (seededPlayers.Count + 1) / 2;
+        var tableNumber = 1;
+
+        for (var i = 0; i < topHalfSize; i++)
+        {
+            var topPlayer = seededPlayers[i];
+            var bottomIndex = i + topHalfSize;
+            var bottomPlayer = bottomIndex < seededPlayers.Count ? seededPlayers[bottomIndex] : null;
+
+            matches.Add(new TournamentMatchSnapshot
+            {
+                MatchId = Guid.NewGuid(),
+                TableNumber = tableNumber,
+                PlayerASeed = topPlayer.Seed,
+                PlayerAId = topPlayer.PlayerId,
+                PlayerAName = topPlayer.Name,
+                PlayerBSeed = bottomPlayer?.Seed,
+                PlayerBId = bottomPlayer?.PlayerId,
+                PlayerBName = bottomPlayer?.Name,
+                IsBye = bottomPlayer is null,
+                ResultForPlayerA = bottomPlayer is null ? MatchResult.Win : null,
+                ReportedOnUtc = bottomPlayer is null ? generatedOnUtc : null,
+                RecordedMatchId = null
+            });
+
+            tableNumber++;
+        }
+
+        return matches;
+    }
+
+    private static TournamentHistorySummary CloneTournamentHistorySummary(TournamentHistorySummary summary)
+    {
+        return new TournamentHistorySummary
+        {
+            TournamentId = summary.TournamentId,
+            MatchingMode = summary.MatchingMode,
+            RankMetric = summary.RankMetric,
+            GeneratedOnUtc = summary.GeneratedOnUtc,
+            ArchivedOnUtc = summary.ArchivedOnUtc,
+            CompletedOnUtc = summary.CompletedOnUtc,
+            PlayerCount = summary.PlayerCount,
+            TotalRounds = summary.TotalRounds,
+            TotalMatches = summary.TotalMatches,
+            CompletedMatches = summary.CompletedMatches,
+            WinnerName = summary.WinnerName
+        };
+    }
+
+    private static TournamentHistorySummary? SanitizeTournamentHistorySummary(TournamentHistorySummary? parsedSummary)
+    {
+        if (parsedSummary is null)
+        {
+            return null;
+        }
+
+        if (parsedSummary.PlayerCount < 0 || parsedSummary.TotalRounds < 0 || parsedSummary.TotalMatches < 0 || parsedSummary.CompletedMatches < 0)
+        {
+            return null;
+        }
+
+        var tournamentId = parsedSummary.TournamentId == Guid.Empty
+            ? Guid.NewGuid()
+            : parsedSummary.TournamentId;
+
+        var matchingMode = Enum.IsDefined(parsedSummary.MatchingMode)
+            ? parsedSummary.MatchingMode
+            : TournamentMatchingMode.ClassicSwissStage;
+
+        var rankMetric = Enum.IsDefined(parsedSummary.RankMetric)
+            ? parsedSummary.RankMetric
+            : TournamentRankMetric.WinRate;
+
+        var winnerName = (parsedSummary.WinnerName ?? string.Empty).Trim();
+
+        return new TournamentHistorySummary
+        {
+            TournamentId = tournamentId,
+            MatchingMode = matchingMode,
+            RankMetric = rankMetric,
+            GeneratedOnUtc = NormalizeUtc(parsedSummary.GeneratedOnUtc),
+            ArchivedOnUtc = NormalizeUtc(parsedSummary.ArchivedOnUtc),
+            CompletedOnUtc = parsedSummary.CompletedOnUtc.HasValue
+                ? NormalizeUtc(parsedSummary.CompletedOnUtc.Value)
+                : null,
+            PlayerCount = parsedSummary.PlayerCount,
+            TotalRounds = parsedSummary.TotalRounds,
+            TotalMatches = parsedSummary.TotalMatches,
+            CompletedMatches = Math.Min(parsedSummary.CompletedMatches, parsedSummary.TotalMatches),
+            WinnerName = string.IsNullOrWhiteSpace(winnerName) ? null : winnerName
         };
     }
 
@@ -521,7 +1107,7 @@ public sealed class MatchTrackerService
 
         var generatedOnUtc = parsedBracket.GeneratedOnUtc == default
             ? DateTime.UtcNow
-            : parsedBracket.GeneratedOnUtc.ToUniversalTime();
+            : NormalizeUtc(parsedBracket.GeneratedOnUtc);
 
         var seeds = parsedBracket.Seeds
             .Where(seed => seed.Seed > 0 && seed.PlayerId != Guid.Empty)
@@ -568,6 +1154,137 @@ public sealed class MatchTrackerService
         };
     }
 
+    private void ArchiveTournamentLocked(TournamentSnapshot tournamentSnapshot, DateTime archivedOnUtc)
+    {
+        var summary = BuildTournamentHistorySummary(tournamentSnapshot, archivedOnUtc);
+        _state.TournamentHistory.Insert(0, summary);
+
+        if (_state.TournamentHistory.Count > TournamentHistoryLimit)
+        {
+            _state.TournamentHistory = _state.TournamentHistory
+                .Take(TournamentHistoryLimit)
+                .ToList();
+        }
+    }
+
+    private static TournamentHistorySummary BuildTournamentHistorySummary(TournamentSnapshot tournamentSnapshot, DateTime archivedOnUtc)
+    {
+        var standings = BuildTournamentStandings(tournamentSnapshot).ToList();
+        var totalMatches = tournamentSnapshot.Rounds
+            .SelectMany(round => round.Matches)
+            .Count(match => !match.IsBye);
+
+        var completedMatches = tournamentSnapshot.Rounds
+            .SelectMany(round => round.Matches)
+            .Count(match => !match.IsBye && match.ResultForPlayerA.HasValue);
+
+        var winner = standings
+            .OrderByDescending(row => row.Points)
+            .ThenByDescending(row => row.Wins)
+            .ThenBy(row => row.Seed)
+            .FirstOrDefault();
+
+        return new TournamentHistorySummary
+        {
+            TournamentId = tournamentSnapshot.TournamentId,
+            MatchingMode = tournamentSnapshot.MatchingMode,
+            RankMetric = tournamentSnapshot.RankMetric,
+            GeneratedOnUtc = tournamentSnapshot.GeneratedOnUtc,
+            ArchivedOnUtc = NormalizeUtc(archivedOnUtc),
+            CompletedOnUtc = tournamentSnapshot.CompletedOnUtc,
+            PlayerCount = tournamentSnapshot.Seeds.Count,
+            TotalRounds = tournamentSnapshot.Rounds.Count,
+            TotalMatches = totalMatches,
+            CompletedMatches = completedMatches,
+            WinnerName = winner?.Name
+        };
+    }
+
+    private static IEnumerable<TournamentStandingRow> BuildTournamentStandings(TournamentSnapshot tournamentSnapshot)
+    {
+        var rows = tournamentSnapshot.Seeds
+            .Select(seed => new TournamentStandingRow(seed.Seed, seed.PlayerId, seed.Name))
+            .ToDictionary(row => row.PlayerId, row => row);
+
+        foreach (var match in tournamentSnapshot.Rounds
+                     .OrderBy(round => round.RoundNumber)
+                     .SelectMany(round => round.Matches.OrderBy(match => match.TableNumber)))
+        {
+            if (!rows.TryGetValue(match.PlayerAId, out var rowA))
+            {
+                continue;
+            }
+
+            if (match.IsBye)
+            {
+                rowA.Wins++;
+                rowA.Points += 3;
+                continue;
+            }
+
+            if (!match.PlayerBId.HasValue || !rows.TryGetValue(match.PlayerBId.Value, out var rowB) || !match.ResultForPlayerA.HasValue)
+            {
+                continue;
+            }
+
+            ApplyStandingResult(rowA, rowB, match.ResultForPlayerA.Value);
+        }
+
+        return rows.Values;
+    }
+
+    private static void ApplyStandingResult(TournamentStandingRow rowA, TournamentStandingRow rowB, MatchResult resultForPlayerA)
+    {
+        switch (resultForPlayerA)
+        {
+            case MatchResult.Win:
+                rowA.Wins++;
+                rowA.Points += 3;
+                rowB.Losses++;
+                break;
+            case MatchResult.Loss:
+                rowA.Losses++;
+                rowB.Wins++;
+                rowB.Points += 3;
+                break;
+            default:
+                rowA.Draws++;
+                rowB.Draws++;
+                rowA.Points++;
+                rowB.Points++;
+                break;
+        }
+    }
+
+    private static void UpdateTournamentCompletionLocked(TournamentSnapshot tournamentSnapshot, DateTime nowUtc)
+    {
+        var allPlayableMatches = tournamentSnapshot.Rounds
+            .SelectMany(round => round.Matches)
+            .Where(match => !match.IsBye)
+            .ToList();
+
+        if (allPlayableMatches.Count == 0 || allPlayableMatches.All(match => match.ResultForPlayerA.HasValue))
+        {
+            tournamentSnapshot.CompletedOnUtc ??= NormalizeUtc(nowUtc);
+        }
+        else
+        {
+            tournamentSnapshot.CompletedOnUtc = null;
+        }
+    }
+
+    private static DateTime NormalizeUtc(DateTime timestamp)
+    {
+        if (timestamp == default)
+        {
+            return DateTime.UtcNow;
+        }
+
+        return timestamp.Kind == DateTimeKind.Utc
+            ? timestamp
+            : timestamp.ToUniversalTime();
+    }
+
     private static string BuildWinRateLabel(int wins, int losses, int draws)
     {
         var matchesPlayed = wins + losses + draws;
@@ -579,15 +1296,37 @@ public sealed class MatchTrackerService
         var winRatePercent = (int)Math.Round((double)wins / matchesPlayed * 100, MidpointRounding.AwayFromZero);
         return $"{winRatePercent}% WR";
     }
+
+    private sealed class TournamentStandingRow
+    {
+        public TournamentStandingRow(int seed, Guid playerId, string name)
+        {
+            Seed = seed;
+            PlayerId = playerId;
+            Name = name;
+        }
+
+        public int Seed { get; }
+        public Guid PlayerId { get; }
+        public string Name { get; }
+        public int Wins { get; set; }
+        public int Losses { get; set; }
+        public int Draws { get; set; }
+        public int Points { get; set; }
+    }
 }
 
 public sealed class MatchTrackerState
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public bool UsePoints { get; set; } = true;
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
-    public TournamentBracketSnapshot? TournamentBracket { get; set; }
+    public TournamentSnapshot? CurrentTournament { get; set; }
+    public List<TournamentHistorySummary> TournamentHistory { get; set; } = new();
+
+    [JsonProperty("tournamentBracket")]
+    public TournamentBracketSnapshot? LegacyTournamentBracket { get; set; }
 }
 
 public sealed record Player(Guid Id, string Name);
@@ -627,7 +1366,9 @@ public enum MatchResult
 
 public enum TournamentMatchingMode
 {
-    ClassicSwissStage
+    ClassicSwissStage,
+    MonradSwiss,
+    RoundRobin
 }
 
 public enum TournamentRankMetric
@@ -635,6 +1376,54 @@ public enum TournamentRankMetric
     WinRate,
     TotalWins,
     Points
+}
+
+public sealed class TournamentSnapshot
+{
+    public Guid TournamentId { get; set; } = Guid.NewGuid();
+    public TournamentMatchingMode MatchingMode { get; set; } = TournamentMatchingMode.ClassicSwissStage;
+    public TournamentRankMetric RankMetric { get; set; } = TournamentRankMetric.WinRate;
+    public DateTime GeneratedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? CompletedOnUtc { get; set; }
+    public List<TournamentSeedSnapshot> Seeds { get; set; } = new();
+    public List<TournamentRoundSnapshot> Rounds { get; set; } = new();
+}
+
+public sealed class TournamentRoundSnapshot
+{
+    public int RoundNumber { get; set; }
+    public List<TournamentMatchSnapshot> Matches { get; set; } = new();
+}
+
+public sealed class TournamentMatchSnapshot
+{
+    public Guid MatchId { get; set; } = Guid.NewGuid();
+    public int TableNumber { get; set; }
+    public int PlayerASeed { get; set; }
+    public Guid PlayerAId { get; set; }
+    public string PlayerAName { get; set; } = string.Empty;
+    public int? PlayerBSeed { get; set; }
+    public Guid? PlayerBId { get; set; }
+    public string? PlayerBName { get; set; }
+    public bool IsBye { get; set; }
+    public MatchResult? ResultForPlayerA { get; set; }
+    public DateTime? ReportedOnUtc { get; set; }
+    public Guid? RecordedMatchId { get; set; }
+}
+
+public sealed class TournamentHistorySummary
+{
+    public Guid TournamentId { get; set; }
+    public TournamentMatchingMode MatchingMode { get; set; }
+    public TournamentRankMetric RankMetric { get; set; }
+    public DateTime GeneratedOnUtc { get; set; }
+    public DateTime ArchivedOnUtc { get; set; }
+    public DateTime? CompletedOnUtc { get; set; }
+    public int PlayerCount { get; set; }
+    public int TotalRounds { get; set; }
+    public int TotalMatches { get; set; }
+    public int CompletedMatches { get; set; }
+    public string? WinnerName { get; set; }
 }
 
 public sealed class TournamentBracketSnapshot

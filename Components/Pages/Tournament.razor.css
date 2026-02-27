@@ -1,4 +1,9 @@
-.swiss-pairing-card {
+.tournament-round-card {
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 14px;
+}
+
+.tournament-match-card {
     border: 1px solid var(--mud-palette-lines-default);
     border-radius: 12px;
     height: 100%;
@@ -6,4 +11,8 @@
 
 .pairing-row {
     gap: 0.75rem;
+}
+
+.match-winner {
+    font-weight: 700;
 }

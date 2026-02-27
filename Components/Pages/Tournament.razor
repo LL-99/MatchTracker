@@ -2,6 +2,7 @@
 
 @inject MatchTrackerService Tracker
 @inject IJSRuntime JS
+@inject ISnackbar Snackbar
 
 <PageTitle>Tournament</PageTitle>
 
@@ -25,6 +26,8 @@
                                Margin="Margin.Dense"
                                @bind-Value="_matchingMode">
                         <MudSelectItem Value="@TournamentMatchingMode.ClassicSwissStage">Classic Swiss Stage</MudSelectItem>
+                        <MudSelectItem Value="@TournamentMatchingMode.MonradSwiss">Monrad Swiss</MudSelectItem>
+                        <MudSelectItem Value="@TournamentMatchingMode.RoundRobin">Round Robin</MudSelectItem>
                     </MudSelect>
                 </MudItem>
                 <MudItem xs="12" md="4">
@@ -42,81 +45,183 @@
                     <MudButton Variant="Variant.Filled"
                                Color="Color.Primary"
                                FullWidth="true"
-                               OnClick="GenerateBracketAsync">
-                        Generate Bracket
+                               OnClick="GenerateTournamentAsync">
+                        Generate Tournament
                     </MudButton>
                 </MudItem>
             </MudGrid>
         </MudPaper>
 
-        @if (_seededPlayers.Count == 0)
+        @if (_currentTournament is null)
         {
             <MudAlert Severity="Severity.Info" Dense="true">
-                No cached bracket yet. Click Generate Bracket to snapshot current player data.
+                No active tournament yet. Click Generate Tournament to snapshot current player data.
             </MudAlert>
         }
         else
         {
             <MudAlert Severity="Severity.Info" Dense="true">
-                Cached bracket generated on @_generatedOnUtc?.ToLocalTime().ToString("g")
-                using @GetMatchingModeLabel(_activeMatchingMode) and @GetRankMetricLabel(_activeRankMetric).
+                Active tournament generated on @_currentTournament.GeneratedOnUtc.ToLocalTime().ToString("g")
+                using @GetMatchingModeLabel(_currentTournament.MatchingMode) and @GetRankMetricLabel(_currentTournament.RankMetric).
+                @if (_currentTournament.CompletedOnUtc.HasValue)
+                {
+                    <span> Completed on @_currentTournament.CompletedOnUtc.Value.ToLocalTime().ToString("g").</span>
+                }
             </MudAlert>
 
-            <MudText Typo="Typo.h6">Seeding</MudText>
-            <MudTable T="TournamentSeedSnapshot" Items="_seededPlayers" Hover="true" Dense="true">
+            <MudGrid>
+                <MudItem xs="12" lg="7">
+                    <MudText Typo="Typo.h6">Standings</MudText>
+                    <MudTable T="TournamentStandingRow" Items="_standings" Hover="true" Dense="true">
+                        <HeaderContent>
+                            <MudTh>#</MudTh>
+                            <MudTh>Player</MudTh>
+                            <MudTh Style="text-align: right;">Points</MudTh>
+                            <MudTh Style="text-align: right;">W</MudTh>
+                            <MudTh Style="text-align: right;">L</MudTh>
+                            <MudTh Style="text-align: right;">D</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="#">@context.Rank</MudTd>
+                            <MudTd DataLabel="Player">@context.Name</MudTd>
+                            <MudTd DataLabel="Points" Style="text-align: right;">@context.Points</MudTd>
+                            <MudTd DataLabel="W" Style="text-align: right;">@context.Wins</MudTd>
+                            <MudTd DataLabel="L" Style="text-align: right;">@context.Losses</MudTd>
+                            <MudTd DataLabel="D" Style="text-align: right;">@context.Draws</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                </MudItem>
+                <MudItem xs="12" lg="5">
+                    <MudText Typo="Typo.h6">Seeding Snapshot</MudText>
+                    <MudTable T="TournamentSeedSnapshot" Items="_currentTournament.Seeds" Hover="true" Dense="true">
+                        <HeaderContent>
+                            <MudTh>Seed</MudTh>
+                            <MudTh>Player</MudTh>
+                            <MudTh Style="text-align: right;">Win Rate</MudTh>
+                            <MudTh Style="text-align: right;">Wins</MudTh>
+                            <MudTh Style="text-align: right;">Points</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Seed">@context.Seed</MudTd>
+                            <MudTd DataLabel="Player">@context.Name</MudTd>
+                            <MudTd DataLabel="Win Rate" Style="text-align: right;">@context.WinRateLabel</MudTd>
+                            <MudTd DataLabel="Wins" Style="text-align: right;">@context.Wins</MudTd>
+                            <MudTd DataLabel="Points" Style="text-align: right;">@context.Score</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.h6">Rounds</MudText>
+            @foreach (var round in _currentTournament.Rounds.OrderBy(round => round.RoundNumber))
+            {
+                <MudPaper Class="pa-4 tournament-round-card">
+                    <MudText Typo="Typo.subtitle1" Class="mb-3">Round @round.RoundNumber</MudText>
+                    <MudGrid>
+                        @foreach (var match in round.Matches.OrderBy(match => match.TableNumber))
+                        {
+                            <MudItem xs="12" md="6" lg="4">
+                                <MudPaper Class="pa-3 tournament-match-card">
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.caption">Table @match.TableNumber</MudText>
+                                        <MudStack Row="true" AlignItems="AlignItems.Center" Class="pairing-row">
+                                            <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
+                                                #@match.PlayerASeed
+                                            </MudChip>
+                                            <MudText Typo="Typo.body1" Class="@(IsPlayerAWinner(match) ? "match-winner" : string.Empty)">
+                                                @match.PlayerAName
+                                            </MudText>
+                                        </MudStack>
+
+                                        @if (match.IsBye)
+                                        {
+                                            <MudStack Row="true" AlignItems="AlignItems.Center" Class="pairing-row">
+                                                <MudChip Color="Color.Warning" Variant="Variant.Filled" Size="Size.Small" T="string">BYE</MudChip>
+                                                <MudText Typo="Typo.body2">Automatic win</MudText>
+                                            </MudStack>
+                                        }
+                                        else
+                                        {
+                                            <MudStack Row="true" AlignItems="AlignItems.Center" Class="pairing-row">
+                                                <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
+                                                    #@match.PlayerBSeed
+                                                </MudChip>
+                                                <MudText Typo="Typo.body1" Class="@(IsPlayerBWinner(match) ? "match-winner" : string.Empty)">
+                                                    @match.PlayerBName
+                                                </MudText>
+                                            </MudStack>
+
+                                            <MudStack Row="true" Spacing="1" Class="mt-2">
+                                                <MudButton Variant="@(match.ResultForPlayerA == MatchResult.Win ? Variant.Filled : Variant.Outlined)"
+                                                           Color="Color.Success"
+                                                           Size="Size.Small"
+                                                           OnClick="@(() => ReportResultAsync(round.RoundNumber, match.MatchId, MatchResult.Win))">
+                                                    @match.PlayerAName Wins
+                                                </MudButton>
+                                                <MudButton Variant="@(match.ResultForPlayerA == MatchResult.Draw ? Variant.Filled : Variant.Outlined)"
+                                                           Color="Color.Warning"
+                                                           Size="Size.Small"
+                                                           OnClick="@(() => ReportResultAsync(round.RoundNumber, match.MatchId, MatchResult.Draw))">
+                                                    Draw
+                                                </MudButton>
+                                                <MudButton Variant="@(match.ResultForPlayerA == MatchResult.Loss ? Variant.Filled : Variant.Outlined)"
+                                                           Color="Color.Error"
+                                                           Size="Size.Small"
+                                                           OnClick="@(() => ReportResultAsync(round.RoundNumber, match.MatchId, MatchResult.Loss))">
+                                                    @match.PlayerBName Wins
+                                                </MudButton>
+                                            </MudStack>
+                                        }
+
+                                        <MudChip Color="@GetResultChipColor(match)" Variant="Variant.Outlined" Size="Size.Small" T="string" Class="mt-2">
+                                            @GetResultLabel(match)
+                                        </MudChip>
+                                        @if (match.ReportedOnUtc.HasValue)
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                Saved @match.ReportedOnUtc.Value.ToLocalTime().ToString("g")
+                                            </MudText>
+                                        }
+                                    </MudStack>
+                                </MudPaper>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            }
+        }
+
+        <MudText Typo="Typo.h6">Past Tournaments</MudText>
+        @if (_history.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                No archived tournaments yet.
+            </MudAlert>
+        }
+        else
+        {
+            <MudTable T="TournamentHistorySummary" Items="_history" Hover="true" Dense="true">
                 <HeaderContent>
-                    <MudTh>Seed</MudTh>
-                    <MudTh>Player</MudTh>
-                    <MudTh Style="text-align: right;">Win Rate</MudTh>
-                    <MudTh Style="text-align: right;">Wins</MudTh>
-                    <MudTh Style="text-align: right;">Points</MudTh>
+                    <MudTh>Mode</MudTh>
+                    <MudTh>Metric</MudTh>
+                    <MudTh Style="text-align: right;">Players</MudTh>
+                    <MudTh Style="text-align: right;">Rounds</MudTh>
+                    <MudTh Style="text-align: right;">Completed</MudTh>
+                    <MudTh>Winner</MudTh>
+                    <MudTh Style="text-align: right;">Generated</MudTh>
+                    <MudTh Style="text-align: right;">Archived</MudTh>
                 </HeaderContent>
                 <RowTemplate>
-                    <MudTd DataLabel="Seed">@context.Seed</MudTd>
-                    <MudTd DataLabel="Player">@context.Name</MudTd>
-                    <MudTd DataLabel="Win Rate" Style="text-align: right;">@context.WinRateLabel</MudTd>
-                    <MudTd DataLabel="Wins" Style="text-align: right;">@context.Wins</MudTd>
-                    <MudTd DataLabel="Points" Style="text-align: right;">@context.Score</MudTd>
+                    <MudTd DataLabel="Mode">@GetMatchingModeLabel(context.MatchingMode)</MudTd>
+                    <MudTd DataLabel="Metric">@GetRankMetricLabel(context.RankMetric)</MudTd>
+                    <MudTd DataLabel="Players" Style="text-align: right;">@context.PlayerCount</MudTd>
+                    <MudTd DataLabel="Rounds" Style="text-align: right;">@context.TotalRounds</MudTd>
+                    <MudTd DataLabel="Completed" Style="text-align: right;">@context.CompletedMatches/@context.TotalMatches</MudTd>
+                    <MudTd DataLabel="Winner">@(context.WinnerName ?? "-")</MudTd>
+                    <MudTd DataLabel="Generated" Style="text-align: right;">@context.GeneratedOnUtc.ToLocalTime().ToString("g")</MudTd>
+                    <MudTd DataLabel="Archived" Style="text-align: right;">@context.ArchivedOnUtc.ToLocalTime().ToString("g")</MudTd>
                 </RowTemplate>
             </MudTable>
-
-            <MudText Typo="Typo.h6">Round 1 Pairings</MudText>
-            <MudGrid>
-                @foreach (var pairing in _pairings)
-                {
-                    <MudItem xs="12" md="6">
-                        <MudPaper Class="pa-4 swiss-pairing-card">
-                            <MudStack Spacing="2">
-                                <MudText Typo="Typo.subtitle2">Table @pairing.TableNumber</MudText>
-                                <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
-                                    <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
-                                        #@pairing.PlayerA.Seed
-                                    </MudChip>
-                                    <MudText Typo="Typo.body1">@pairing.PlayerA.Name</MudText>
-                                </MudStack>
-                                @if (pairing.PlayerB is not null)
-                                {
-                                    <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
-                                        <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
-                                            #@pairing.PlayerB.Seed
-                                        </MudChip>
-                                        <MudText Typo="Typo.body1">@pairing.PlayerB.Name</MudText>
-                                    </MudStack>
-                                }
-                                else
-                                {
-                                    <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
-                                        <MudChip Color="Color.Warning" Variant="Variant.Filled" Size="Size.Small" T="string">
-                                            BYE
-                                        </MudChip>
-                                        <MudText Typo="Typo.body1">No opponent this round</MudText>
-                                    </MudStack>
-                                }
-                            </MudStack>
-                        </MudPaper>
-                    </MudItem>
-                }
-            </MudGrid>
         }
     }
 </MudStack>
@@ -125,11 +230,9 @@
     private bool _isReady;
     private TournamentMatchingMode _matchingMode = TournamentMatchingMode.ClassicSwissStage;
     private TournamentRankMetric _rankMetric = TournamentRankMetric.WinRate;
-    private TournamentMatchingMode _activeMatchingMode = TournamentMatchingMode.ClassicSwissStage;
-    private TournamentRankMetric _activeRankMetric = TournamentRankMetric.WinRate;
-    private DateTime? _generatedOnUtc;
-    private List<TournamentSeedSnapshot> _seededPlayers = new();
-    private List<SwissPairing> _pairings = new();
+    private TournamentSnapshot? _currentTournament;
+    private List<TournamentStandingRow> _standings = new();
+    private List<TournamentHistorySummary> _history = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -139,61 +242,93 @@
         }
 
         await Tracker.EnsureInitializedAsync(JS);
-        LoadCachedBracket();
+        LoadTournamentState();
         _isReady = true;
         StateHasChanged();
     }
 
-    private void LoadCachedBracket()
+    private void LoadTournamentState()
     {
-        var snapshot = Tracker.GetTournamentBracketSnapshot();
-        if (snapshot is null)
+        _currentTournament = Tracker.GetCurrentTournamentSnapshot();
+        _history = Tracker.GetTournamentHistorySummaries().ToList();
+
+        if (_currentTournament is not null)
         {
-            _generatedOnUtc = null;
-            _seededPlayers = new List<TournamentSeedSnapshot>();
-            _pairings = new List<SwissPairing>();
+            _matchingMode = _currentTournament.MatchingMode;
+            _rankMetric = _currentTournament.RankMetric;
+            _standings = BuildStandings(_currentTournament);
+        }
+        else
+        {
+            _standings = new List<TournamentStandingRow>();
+        }
+    }
+
+    private async Task GenerateTournamentAsync()
+    {
+        var seeded = GetSeededPlayers(_rankMetric).ToList();
+        if (seeded.Count == 0)
+        {
+            Tracker.SetCurrentTournamentSnapshot(null);
+            await Tracker.PersistAsync(JS);
+            LoadTournamentState();
+            Snackbar.Add("No players to seed. Active tournament cleared.", Severity.Info);
             return;
         }
 
-        _matchingMode = snapshot.MatchingMode;
-        _rankMetric = snapshot.RankMetric;
-        _activeMatchingMode = snapshot.MatchingMode;
-        _activeRankMetric = snapshot.RankMetric;
-        _generatedOnUtc = snapshot.GeneratedOnUtc;
-        _seededPlayers = snapshot.Seeds.ToList();
-        _pairings = BuildPairings(_activeMatchingMode, _seededPlayers);
-    }
+        var generatedOnUtc = DateTime.UtcNow;
+        var rounds = BuildRounds(_matchingMode, seeded, generatedOnUtc);
+        if (rounds.Count == 0)
+        {
+            Snackbar.Add("Could not generate a tournament for this configuration.", Severity.Error);
+            return;
+        }
 
-    private async Task GenerateBracketAsync()
-    {
-        var seeded = GetSeededPlayers(_rankMetric).ToList();
-
-        _activeMatchingMode = _matchingMode;
-        _activeRankMetric = _rankMetric;
-        _generatedOnUtc = DateTime.UtcNow;
-        _seededPlayers = seeded;
-        _pairings = BuildPairings(_activeMatchingMode, _seededPlayers);
-
-        Tracker.SetTournamentBracketSnapshot(
-            seeded.Count == 0
-                ? null
-                : new TournamentBracketSnapshot
-                {
-                    MatchingMode = _activeMatchingMode,
-                    RankMetric = _activeRankMetric,
-                    GeneratedOnUtc = _generatedOnUtc.Value,
-                    Seeds = seeded
-                });
+        Tracker.SetCurrentTournamentSnapshot(new TournamentSnapshot
+        {
+            TournamentId = Guid.NewGuid(),
+            MatchingMode = _matchingMode,
+            RankMetric = _rankMetric,
+            GeneratedOnUtc = generatedOnUtc,
+            CompletedOnUtc = null,
+            Seeds = seeded,
+            Rounds = rounds
+        });
 
         await Tracker.PersistAsync(JS);
+        LoadTournamentState();
+        Snackbar.Add("Tournament generated and cached.", Severity.Success);
     }
 
-    private static List<SwissPairing> BuildPairings(TournamentMatchingMode matchingMode, IReadOnlyList<TournamentSeedSnapshot> seededPlayers)
+    private async Task ReportResultAsync(int roundNumber, Guid tournamentMatchId, MatchResult resultForPlayerA)
+    {
+        if (_currentTournament is null)
+        {
+            return;
+        }
+
+        if (Tracker.TryRecordTournamentMatchResult(_currentTournament.TournamentId, roundNumber, tournamentMatchId, resultForPlayerA, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            LoadTournamentState();
+            Snackbar.Add("Tournament match result saved.", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private static List<TournamentRoundSnapshot> BuildRounds(
+        TournamentMatchingMode matchingMode,
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
     {
         return matchingMode switch
         {
-            TournamentMatchingMode.ClassicSwissStage => BuildClassicSwissRoundOne(seededPlayers),
-            _ => new List<SwissPairing>()
+            TournamentMatchingMode.RoundRobin => BuildRoundRobinRounds(seededPlayers, generatedOnUtc),
+            TournamentMatchingMode.MonradSwiss => BuildMonradRounds(seededPlayers, generatedOnUtc),
+            _ => BuildClassicSwissRounds(seededPlayers, generatedOnUtc)
         };
     }
 
@@ -223,47 +358,391 @@
         };
 
         return sorted.Select((summary, index) =>
-            new TournamentSeedSnapshot(
-                index + 1,
-                summary.PlayerId,
-                summary.Name,
-                summary.Wins,
-                summary.Losses,
-                summary.Draws,
-                summary.Score,
-                summary.WinRateLabel))
+                new TournamentSeedSnapshot(
+                    index + 1,
+                    summary.PlayerId,
+                    summary.Name,
+                    summary.Wins,
+                    summary.Losses,
+                    summary.Draws,
+                    summary.Score,
+                    summary.WinRateLabel))
             .ToList();
     }
 
-    private static List<SwissPairing> BuildClassicSwissRoundOne(IReadOnlyList<TournamentSeedSnapshot> seededPlayers)
+    private static List<TournamentRoundSnapshot> BuildClassicSwissRounds(
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
     {
-        var pairings = new List<SwissPairing>();
+        return new List<TournamentRoundSnapshot>
+        {
+            new()
+            {
+                RoundNumber = 1,
+                Matches = BuildClassicSwissRound(seededPlayers, generatedOnUtc)
+            }
+        };
+    }
+
+    private static List<TournamentMatchSnapshot> BuildClassicSwissRound(
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
+    {
+        var matches = new List<TournamentMatchSnapshot>();
         if (seededPlayers.Count == 0)
         {
-            return pairings;
+            return matches;
         }
 
         var topHalfSize = (seededPlayers.Count + 1) / 2;
-        var tableNumber = 1;
 
         for (var i = 0; i < topHalfSize; i++)
         {
-            var topPlayer = seededPlayers[i];
-            var bottomIndex = i + topHalfSize;
-            var bottomPlayer = bottomIndex < seededPlayers.Count ? seededPlayers[bottomIndex] : null;
-            pairings.Add(new SwissPairing(tableNumber, topPlayer, bottomPlayer));
-            tableNumber++;
+            var playerA = seededPlayers[i];
+            var playerBIndex = i + topHalfSize;
+            var playerB = playerBIndex < seededPlayers.Count ? seededPlayers[playerBIndex] : null;
+
+            matches.Add(BuildMatch(i + 1, playerA, playerB, generatedOnUtc));
         }
 
-        return pairings;
+        return matches;
+    }
+
+    private static List<TournamentRoundSnapshot> BuildRoundRobinRounds(
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
+    {
+        if (seededPlayers.Count == 0)
+        {
+            return new List<TournamentRoundSnapshot>();
+        }
+
+        var rotation = seededPlayers.Select(player => (TournamentSeedSnapshot?)player).ToList();
+        if (rotation.Count % 2 != 0)
+        {
+            rotation.Add(null);
+        }
+
+        var rounds = new List<TournamentRoundSnapshot>();
+        var roundCount = Math.Max(1, rotation.Count - 1);
+
+        for (var roundIndex = 0; roundIndex < roundCount; roundIndex++)
+        {
+            var matches = new List<TournamentMatchSnapshot>();
+            var half = rotation.Count / 2;
+
+            for (var tableIndex = 0; tableIndex < half; tableIndex++)
+            {
+                var left = rotation[tableIndex];
+                var right = rotation[rotation.Count - 1 - tableIndex];
+
+                if (left is null && right is null)
+                {
+                    continue;
+                }
+
+                var playerA = left ?? right!;
+                var playerB = left is null || right is null ? null : right;
+
+                // Alternate first table side to avoid one player always being listed as player A.
+                if (tableIndex == 0 && roundIndex % 2 == 1 && playerB is not null)
+                {
+                    (playerA, playerB) = (playerB, playerA);
+                }
+
+                matches.Add(BuildMatch(tableIndex + 1, playerA, playerB, generatedOnUtc));
+            }
+
+            rounds.Add(new TournamentRoundSnapshot
+            {
+                RoundNumber = roundIndex + 1,
+                Matches = matches
+            });
+
+            RotateRoundRobin(rotation);
+        }
+
+        return rounds;
+    }
+
+    private static void RotateRoundRobin(List<TournamentSeedSnapshot?> rotation)
+    {
+        if (rotation.Count <= 2)
+        {
+            return;
+        }
+
+        var fixedPlayer = rotation[0];
+        var moving = rotation.Skip(1).ToList();
+        var tail = moving[^1];
+        moving.RemoveAt(moving.Count - 1);
+        moving.Insert(0, tail);
+
+        rotation.Clear();
+        rotation.Add(fixedPlayer);
+        rotation.AddRange(moving);
+    }
+
+    private static List<TournamentRoundSnapshot> BuildMonradRounds(
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        DateTime generatedOnUtc)
+    {
+        var rounds = new List<TournamentRoundSnapshot>();
+        if (seededPlayers.Count == 0)
+        {
+            return rounds;
+        }
+
+        var points = seededPlayers.ToDictionary(seed => seed.PlayerId, _ => 0);
+        var opponents = seededPlayers.ToDictionary(seed => seed.PlayerId, _ => new HashSet<Guid>());
+        var hasBye = seededPlayers.ToDictionary(seed => seed.PlayerId, _ => false);
+
+        var roundCount = GetSwissRoundCount(seededPlayers.Count);
+
+        for (var roundNumber = 1; roundNumber <= roundCount; roundNumber++)
+        {
+            var ordered = seededPlayers
+                .OrderByDescending(seed => points[seed.PlayerId])
+                .ThenBy(seed => seed.Seed)
+                .ToList();
+
+            TournamentSeedSnapshot? byePlayer = null;
+            if (ordered.Count % 2 != 0)
+            {
+                byePlayer = ordered
+                    .OrderByDescending(seed => points[seed.PlayerId])
+                    .ThenByDescending(seed => seed.Seed)
+                    .FirstOrDefault(seed => !hasBye[seed.PlayerId])
+                    ?? ordered[^1];
+
+                ordered.Remove(byePlayer);
+                hasBye[byePlayer.PlayerId] = true;
+                points[byePlayer.PlayerId] += 3;
+            }
+
+            var pairs = PairMonradRound(ordered, opponents);
+            var matches = new List<TournamentMatchSnapshot>();
+            var tableNumber = 1;
+
+            foreach (var pair in pairs)
+            {
+                matches.Add(BuildMatch(tableNumber, pair.PlayerA, pair.PlayerB, generatedOnUtc));
+                tableNumber++;
+
+                // Full schedule pre-generation uses seeded expectation to stabilize future pairing groups.
+                var projectedAWin = pair.PlayerA.Seed <= pair.PlayerB.Seed;
+                if (projectedAWin)
+                {
+                    points[pair.PlayerA.PlayerId] += 3;
+                }
+                else
+                {
+                    points[pair.PlayerB.PlayerId] += 3;
+                }
+            }
+
+            if (byePlayer is not null)
+            {
+                matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc));
+            }
+
+            rounds.Add(new TournamentRoundSnapshot
+            {
+                RoundNumber = roundNumber,
+                Matches = matches
+            });
+        }
+
+        return rounds;
+    }
+
+    private static List<(TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot PlayerB)> PairMonradRound(
+        IReadOnlyList<TournamentSeedSnapshot> players,
+        IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents)
+    {
+        var pairs = new List<(TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot PlayerB)>();
+        var used = new HashSet<Guid>();
+
+        foreach (var player in players)
+        {
+            if (!used.Add(player.PlayerId))
+            {
+                continue;
+            }
+
+            var opponent = players
+                .Where(candidate => !used.Contains(candidate.PlayerId) && candidate.PlayerId != player.PlayerId)
+                .OrderBy(candidate => previousOpponents[player.PlayerId].Contains(candidate.PlayerId) ? 1 : 0)
+                .ThenBy(candidate => Math.Abs(candidate.Seed - player.Seed))
+                .ThenBy(candidate => candidate.Seed)
+                .FirstOrDefault();
+
+            if (opponent is null)
+            {
+                continue;
+            }
+
+            used.Add(opponent.PlayerId);
+            pairs.Add((player, opponent));
+
+            previousOpponents[player.PlayerId].Add(opponent.PlayerId);
+            previousOpponents[opponent.PlayerId].Add(player.PlayerId);
+        }
+
+        return pairs;
+    }
+
+    private static int GetSwissRoundCount(int playerCount)
+    {
+        if (playerCount <= 1)
+        {
+            return 1;
+        }
+
+        return (int)Math.Ceiling(Math.Log2(playerCount));
+    }
+
+    private static TournamentMatchSnapshot BuildMatch(
+        int tableNumber,
+        TournamentSeedSnapshot playerA,
+        TournamentSeedSnapshot? playerB,
+        DateTime generatedOnUtc)
+    {
+        var isBye = playerB is null;
+
+        return new TournamentMatchSnapshot
+        {
+            MatchId = Guid.NewGuid(),
+            TableNumber = tableNumber,
+            PlayerASeed = playerA.Seed,
+            PlayerAId = playerA.PlayerId,
+            PlayerAName = playerA.Name,
+            PlayerBSeed = playerB?.Seed,
+            PlayerBId = playerB?.PlayerId,
+            PlayerBName = playerB?.Name,
+            IsBye = isBye,
+            ResultForPlayerA = isBye ? MatchResult.Win : null,
+            ReportedOnUtc = isBye ? generatedOnUtc : null,
+            RecordedMatchId = null
+        };
+    }
+
+    private static List<TournamentStandingRow> BuildStandings(TournamentSnapshot tournament)
+    {
+        var standingsByPlayer = tournament.Seeds
+            .Select(seed => new TournamentStandingRow
+            {
+                Seed = seed.Seed,
+                Name = seed.Name,
+                PlayerId = seed.PlayerId
+            })
+            .ToDictionary(row => row.PlayerId, row => row);
+
+        foreach (var match in tournament.Rounds
+                     .OrderBy(round => round.RoundNumber)
+                     .SelectMany(round => round.Matches.OrderBy(match => match.TableNumber)))
+        {
+            if (!standingsByPlayer.TryGetValue(match.PlayerAId, out var rowA))
+            {
+                continue;
+            }
+
+            if (match.IsBye)
+            {
+                rowA.Wins++;
+                rowA.Points += 3;
+                continue;
+            }
+
+            if (!match.PlayerBId.HasValue || !standingsByPlayer.TryGetValue(match.PlayerBId.Value, out var rowB) || !match.ResultForPlayerA.HasValue)
+            {
+                continue;
+            }
+
+            switch (match.ResultForPlayerA.Value)
+            {
+                case MatchResult.Win:
+                    rowA.Wins++;
+                    rowA.Points += 3;
+                    rowB.Losses++;
+                    break;
+                case MatchResult.Loss:
+                    rowA.Losses++;
+                    rowB.Wins++;
+                    rowB.Points += 3;
+                    break;
+                default:
+                    rowA.Draws++;
+                    rowB.Draws++;
+                    rowA.Points++;
+                    rowB.Points++;
+                    break;
+            }
+        }
+
+        var sorted = standingsByPlayer.Values
+            .OrderByDescending(row => row.Points)
+            .ThenByDescending(row => row.Wins)
+            .ThenBy(row => row.Seed)
+            .ToList();
+
+        for (var i = 0; i < sorted.Count; i++)
+        {
+            sorted[i].Rank = i + 1;
+        }
+
+        return sorted;
+    }
+
+    private static bool IsPlayerAWinner(TournamentMatchSnapshot match)
+    {
+        return match.ResultForPlayerA == MatchResult.Win || match.IsBye;
+    }
+
+    private static bool IsPlayerBWinner(TournamentMatchSnapshot match)
+    {
+        return match.ResultForPlayerA == MatchResult.Loss;
+    }
+
+    private static Color GetResultChipColor(TournamentMatchSnapshot match)
+    {
+        if (match.IsBye)
+        {
+            return Color.Success;
+        }
+
+        return match.ResultForPlayerA switch
+        {
+            MatchResult.Win => Color.Success,
+            MatchResult.Loss => Color.Error,
+            MatchResult.Draw => Color.Warning,
+            _ => Color.Default
+        };
+    }
+
+    private static string GetResultLabel(TournamentMatchSnapshot match)
+    {
+        if (match.IsBye)
+        {
+            return $"{match.PlayerAName} receives a bye";
+        }
+
+        return match.ResultForPlayerA switch
+        {
+            MatchResult.Win => $"{match.PlayerAName} won",
+            MatchResult.Loss => $"{match.PlayerBName} won",
+            MatchResult.Draw => "Draw",
+            _ => "Result pending"
+        };
     }
 
     private static string GetMatchingModeLabel(TournamentMatchingMode matchingMode)
     {
         return matchingMode switch
         {
-            TournamentMatchingMode.ClassicSwissStage => "Classic Swiss Stage",
-            _ => "Unknown"
+            TournamentMatchingMode.MonradSwiss => "Monrad Swiss",
+            TournamentMatchingMode.RoundRobin => "Round Robin",
+            _ => "Classic Swiss Stage"
         };
     }
 
@@ -271,12 +750,21 @@
     {
         return rankMetric switch
         {
-            TournamentRankMetric.WinRate => "Win Rate",
             TournamentRankMetric.TotalWins => "Total Wins",
             TournamentRankMetric.Points => "Points",
-            _ => "Unknown"
+            _ => "Win Rate"
         };
     }
 
-    private sealed record SwissPairing(int TableNumber, TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot? PlayerB);
+    private sealed class TournamentStandingRow
+    {
+        public int Rank { get; set; }
+        public int Seed { get; set; }
+        public Guid PlayerId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int Wins { get; set; }
+        public int Losses { get; set; }
+        public int Draws { get; set; }
+        public int Points { get; set; }
+    }
 }
