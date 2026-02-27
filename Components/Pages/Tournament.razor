@@ -42,7 +42,7 @@
                     <MudButton Variant="Variant.Filled"
                                Color="Color.Primary"
                                FullWidth="true"
-                               OnClick="GenerateBracket">
+                               OnClick="GenerateBracketAsync">
                         Generate Bracket
                     </MudButton>
                 </MudItem>
@@ -52,13 +52,18 @@
         @if (_seededPlayers.Count == 0)
         {
             <MudAlert Severity="Severity.Info" Dense="true">
-                Add players to generate a tournament bracket.
+                No cached bracket yet. Click Generate Bracket to snapshot current player data.
             </MudAlert>
         }
         else
         {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Cached bracket generated on @_generatedOnUtc?.ToLocalTime().ToString("g")
+                using @GetMatchingModeLabel(_activeMatchingMode) and @GetRankMetricLabel(_activeRankMetric).
+            </MudAlert>
+
             <MudText Typo="Typo.h6">Seeding</MudText>
-            <MudTable T="TournamentSeedRow" Items="_seededPlayers" Hover="true" Dense="true">
+            <MudTable T="TournamentSeedSnapshot" Items="_seededPlayers" Hover="true" Dense="true">
                 <HeaderContent>
                     <MudTh>Seed</MudTh>
                     <MudTh>Player</MudTh>
@@ -120,7 +125,10 @@
     private bool _isReady;
     private TournamentMatchingMode _matchingMode = TournamentMatchingMode.ClassicSwissStage;
     private TournamentRankMetric _rankMetric = TournamentRankMetric.WinRate;
-    private List<TournamentSeedRow> _seededPlayers = new();
+    private TournamentMatchingMode _activeMatchingMode = TournamentMatchingMode.ClassicSwissStage;
+    private TournamentRankMetric _activeRankMetric = TournamentRankMetric.WinRate;
+    private DateTime? _generatedOnUtc;
+    private List<TournamentSeedSnapshot> _seededPlayers = new();
     private List<SwissPairing> _pairings = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -131,24 +139,65 @@
         }
 
         await Tracker.EnsureInitializedAsync(JS);
+        LoadCachedBracket();
         _isReady = true;
-        GenerateBracket();
         StateHasChanged();
     }
 
-    private void GenerateBracket()
+    private void LoadCachedBracket()
     {
-        var seeded = GetSeededPlayers(_rankMetric);
-        _seededPlayers = seeded.ToList();
-
-        _pairings = _matchingMode switch
+        var snapshot = Tracker.GetTournamentBracketSnapshot();
+        if (snapshot is null)
         {
-            TournamentMatchingMode.ClassicSwissStage => BuildClassicSwissRoundOne(_seededPlayers),
+            _generatedOnUtc = null;
+            _seededPlayers = new List<TournamentSeedSnapshot>();
+            _pairings = new List<SwissPairing>();
+            return;
+        }
+
+        _matchingMode = snapshot.MatchingMode;
+        _rankMetric = snapshot.RankMetric;
+        _activeMatchingMode = snapshot.MatchingMode;
+        _activeRankMetric = snapshot.RankMetric;
+        _generatedOnUtc = snapshot.GeneratedOnUtc;
+        _seededPlayers = snapshot.Seeds.ToList();
+        _pairings = BuildPairings(_activeMatchingMode, _seededPlayers);
+    }
+
+    private async Task GenerateBracketAsync()
+    {
+        var seeded = GetSeededPlayers(_rankMetric).ToList();
+
+        _activeMatchingMode = _matchingMode;
+        _activeRankMetric = _rankMetric;
+        _generatedOnUtc = DateTime.UtcNow;
+        _seededPlayers = seeded;
+        _pairings = BuildPairings(_activeMatchingMode, _seededPlayers);
+
+        Tracker.SetTournamentBracketSnapshot(
+            seeded.Count == 0
+                ? null
+                : new TournamentBracketSnapshot
+                {
+                    MatchingMode = _activeMatchingMode,
+                    RankMetric = _activeRankMetric,
+                    GeneratedOnUtc = _generatedOnUtc.Value,
+                    Seeds = seeded
+                });
+
+        await Tracker.PersistAsync(JS);
+    }
+
+    private static List<SwissPairing> BuildPairings(TournamentMatchingMode matchingMode, IReadOnlyList<TournamentSeedSnapshot> seededPlayers)
+    {
+        return matchingMode switch
+        {
+            TournamentMatchingMode.ClassicSwissStage => BuildClassicSwissRoundOne(seededPlayers),
             _ => new List<SwissPairing>()
         };
     }
 
-    private IReadOnlyList<TournamentSeedRow> GetSeededPlayers(TournamentRankMetric rankMetric)
+    private IReadOnlyList<TournamentSeedSnapshot> GetSeededPlayers(TournamentRankMetric rankMetric)
     {
         var summaries = Tracker.GetPlayerSummaries();
         IEnumerable<PlayerSummary> sorted = rankMetric switch
@@ -174,19 +223,19 @@
         };
 
         return sorted.Select((summary, index) =>
-            new TournamentSeedRow(
-                Seed: index + 1,
-                PlayerId: summary.PlayerId,
-                Name: summary.Name,
-                Wins: summary.Wins,
-                Losses: summary.Losses,
-                Draws: summary.Draws,
-                Score: summary.Score,
-                WinRateLabel: summary.WinRateLabel))
+            new TournamentSeedSnapshot(
+                index + 1,
+                summary.PlayerId,
+                summary.Name,
+                summary.Wins,
+                summary.Losses,
+                summary.Draws,
+                summary.Score,
+                summary.WinRateLabel))
             .ToList();
     }
 
-    private static List<SwissPairing> BuildClassicSwissRoundOne(IReadOnlyList<TournamentSeedRow> seededPlayers)
+    private static List<SwissPairing> BuildClassicSwissRoundOne(IReadOnlyList<TournamentSeedSnapshot> seededPlayers)
     {
         var pairings = new List<SwissPairing>();
         if (seededPlayers.Count == 0)
@@ -209,27 +258,25 @@
         return pairings;
     }
 
-    private enum TournamentMatchingMode
+    private static string GetMatchingModeLabel(TournamentMatchingMode matchingMode)
     {
-        ClassicSwissStage
+        return matchingMode switch
+        {
+            TournamentMatchingMode.ClassicSwissStage => "Classic Swiss Stage",
+            _ => "Unknown"
+        };
     }
 
-    private enum TournamentRankMetric
+    private static string GetRankMetricLabel(TournamentRankMetric rankMetric)
     {
-        WinRate,
-        TotalWins,
-        Points
+        return rankMetric switch
+        {
+            TournamentRankMetric.WinRate => "Win Rate",
+            TournamentRankMetric.TotalWins => "Total Wins",
+            TournamentRankMetric.Points => "Points",
+            _ => "Unknown"
+        };
     }
 
-    private sealed record TournamentSeedRow(
-        int Seed,
-        Guid PlayerId,
-        string Name,
-        int Wins,
-        int Losses,
-        int Draws,
-        int Score,
-        string WinRateLabel);
-
-    private sealed record SwissPairing(int TableNumber, TournamentSeedRow PlayerA, TournamentSeedRow? PlayerB);
+    private sealed record SwissPairing(int TableNumber, TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot? PlayerB);
 }

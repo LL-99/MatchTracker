@@ -127,6 +127,26 @@ public sealed class MatchTrackerService
         }
     }
 
+    public TournamentBracketSnapshot? GetTournamentBracketSnapshot()
+    {
+        lock (_sync)
+        {
+            return _state.TournamentBracket is null
+                ? null
+                : CloneTournamentBracket(_state.TournamentBracket);
+        }
+    }
+
+    public void SetTournamentBracketSnapshot(TournamentBracketSnapshot? bracketSnapshot)
+    {
+        lock (_sync)
+        {
+            _state.TournamentBracket = bracketSnapshot is null
+                ? null
+                : CloneTournamentBracket(bracketSnapshot);
+        }
+    }
+
     public IReadOnlyList<PlayerSummary> GetPlayerSummaries()
     {
         lock (_sync)
@@ -393,7 +413,10 @@ public sealed class MatchTrackerService
                 SchemaVersion = _state.SchemaVersion,
                 UsePoints = _state.UsePoints,
                 Players = _state.Players.ToList(),
-                Matches = _state.Matches.ToList()
+                Matches = _state.Matches.ToList(),
+                TournamentBracket = _state.TournamentBracket is null
+                    ? null
+                    : CloneTournamentBracket(_state.TournamentBracket)
             };
         }
     }
@@ -461,8 +484,100 @@ public sealed class MatchTrackerService
             SchemaVersion = parsedState.SchemaVersion,
             UsePoints = parsedState.UsePoints,
             Players = players,
-            Matches = matches
+            Matches = matches,
+            TournamentBracket = SanitizeTournamentBracket(parsedState.TournamentBracket)
         };
+    }
+
+    private static TournamentBracketSnapshot CloneTournamentBracket(TournamentBracketSnapshot bracketSnapshot)
+    {
+        return new TournamentBracketSnapshot
+        {
+            MatchingMode = bracketSnapshot.MatchingMode,
+            RankMetric = bracketSnapshot.RankMetric,
+            GeneratedOnUtc = bracketSnapshot.GeneratedOnUtc,
+            Seeds = bracketSnapshot.Seeds
+                .Select(seed => seed with { })
+                .ToList()
+        };
+    }
+
+    private static TournamentBracketSnapshot? SanitizeTournamentBracket(TournamentBracketSnapshot? parsedBracket)
+    {
+        if (parsedBracket is null)
+        {
+            return null;
+        }
+
+        parsedBracket.Seeds ??= new List<TournamentSeedSnapshot>();
+
+        var matchingMode = Enum.IsDefined(parsedBracket.MatchingMode)
+            ? parsedBracket.MatchingMode
+            : TournamentMatchingMode.ClassicSwissStage;
+
+        var rankMetric = Enum.IsDefined(parsedBracket.RankMetric)
+            ? parsedBracket.RankMetric
+            : TournamentRankMetric.WinRate;
+
+        var generatedOnUtc = parsedBracket.GeneratedOnUtc == default
+            ? DateTime.UtcNow
+            : parsedBracket.GeneratedOnUtc.ToUniversalTime();
+
+        var seeds = parsedBracket.Seeds
+            .Where(seed => seed.Seed > 0 && seed.PlayerId != Guid.Empty)
+            .Select(seed =>
+            {
+                var name = (seed.Name ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return null;
+                }
+
+                var wins = Math.Max(seed.Wins, 0);
+                var losses = Math.Max(seed.Losses, 0);
+                var draws = Math.Max(seed.Draws, 0);
+
+                return new TournamentSeedSnapshot(
+                    seed.Seed,
+                    seed.PlayerId,
+                    name,
+                    wins,
+                    losses,
+                    draws,
+                    seed.Score,
+                    BuildWinRateLabel(wins, losses, draws));
+            })
+            .Where(seed => seed is not null)
+            .Select(seed => seed!)
+            .OrderBy(seed => seed.Seed)
+            .GroupBy(seed => seed.Seed)
+            .Select(group => group.First())
+            .ToList();
+
+        if (seeds.Count == 0)
+        {
+            return null;
+        }
+
+        return new TournamentBracketSnapshot
+        {
+            MatchingMode = matchingMode,
+            RankMetric = rankMetric,
+            GeneratedOnUtc = generatedOnUtc,
+            Seeds = seeds
+        };
+    }
+
+    private static string BuildWinRateLabel(int wins, int losses, int draws)
+    {
+        var matchesPlayed = wins + losses + draws;
+        if (matchesPlayed == 0)
+        {
+            return "0% WR";
+        }
+
+        var winRatePercent = (int)Math.Round((double)wins / matchesPlayed * 100, MidpointRounding.AwayFromZero);
+        return $"{winRatePercent}% WR";
     }
 }
 
@@ -472,6 +587,7 @@ public sealed class MatchTrackerState
     public bool UsePoints { get; set; } = true;
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
+    public TournamentBracketSnapshot? TournamentBracket { get; set; }
 }
 
 public sealed record Player(Guid Id, string Name);
@@ -508,3 +624,33 @@ public enum MatchResult
     Loss,
     Draw
 }
+
+public enum TournamentMatchingMode
+{
+    ClassicSwissStage
+}
+
+public enum TournamentRankMetric
+{
+    WinRate,
+    TotalWins,
+    Points
+}
+
+public sealed class TournamentBracketSnapshot
+{
+    public TournamentMatchingMode MatchingMode { get; set; } = TournamentMatchingMode.ClassicSwissStage;
+    public TournamentRankMetric RankMetric { get; set; } = TournamentRankMetric.WinRate;
+    public DateTime GeneratedOnUtc { get; set; } = DateTime.UtcNow;
+    public List<TournamentSeedSnapshot> Seeds { get; set; } = new();
+}
+
+public sealed record TournamentSeedSnapshot(
+    int Seed,
+    Guid PlayerId,
+    string Name,
+    int Wins,
+    int Losses,
+    int Draws,
+    int Score,
+    string WinRateLabel);
