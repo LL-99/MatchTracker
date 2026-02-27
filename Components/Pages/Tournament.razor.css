@@ -1,0 +1,9 @@
+.swiss-pairing-card {
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 12px;
+    height: 100%;
+}
+
+.pairing-row {
+    gap: 0.75rem;
+}

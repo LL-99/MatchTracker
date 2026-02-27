@@ -22,6 +22,9 @@
         <MudButton Class="top-nav-link" Variant="Variant.Text" Color="Color.Inherit" Href="/matches">
             Matches
         </MudButton>
+        <MudButton Class="top-nav-link" Variant="Variant.Text" Color="Color.Inherit" Href="/tournament">
+            Tournament
+        </MudButton>
         <MudMenu Icon="@Icons.Material.Filled.MoreVert" Color="Color.Inherit" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
             <MudMenuItem Icon="@Icons.Material.Filled.Settings" OnClick="TogglePointsUsageAsync">
                 @($"Use PT: {(IsPointsEnabled ? "On" : "Off")}")

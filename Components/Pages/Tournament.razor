@@ -1,0 +1,235 @@
+@page "/tournament"
+
+@inject MatchTrackerService Tracker
+@inject IJSRuntime JS
+
+<PageTitle>Tournament</PageTitle>
+
+<MudStack Spacing="3">
+    <MudText Typo="Typo.h4">Tournament</MudText>
+
+    @if (!_isReady)
+    {
+        <MudStack Row="true" Justify="Justify.Center" Class="mt-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        </MudStack>
+    }
+    else
+    {
+        <MudPaper Class="pa-4">
+            <MudGrid AlignItems="AlignItems.End">
+                <MudItem xs="12" md="4">
+                    <MudSelect T="TournamentMatchingMode"
+                               Label="Matching mode"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               @bind-Value="_matchingMode">
+                        <MudSelectItem Value="@TournamentMatchingMode.ClassicSwissStage">Classic Swiss Stage</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudSelect T="TournamentRankMetric"
+                               Label="Seed players by"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               @bind-Value="_rankMetric">
+                        <MudSelectItem Value="@TournamentRankMetric.WinRate">Win Rate</MudSelectItem>
+                        <MudSelectItem Value="@TournamentRankMetric.TotalWins">Total Wins</MudSelectItem>
+                        <MudSelectItem Value="@TournamentRankMetric.Points">Points</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               FullWidth="true"
+                               OnClick="GenerateBracket">
+                        Generate Bracket
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        @if (_seededPlayers.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Add players to generate a tournament bracket.
+            </MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.h6">Seeding</MudText>
+            <MudTable T="TournamentSeedRow" Items="_seededPlayers" Hover="true" Dense="true">
+                <HeaderContent>
+                    <MudTh>Seed</MudTh>
+                    <MudTh>Player</MudTh>
+                    <MudTh Style="text-align: right;">Win Rate</MudTh>
+                    <MudTh Style="text-align: right;">Wins</MudTh>
+                    <MudTh Style="text-align: right;">Points</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Seed">@context.Seed</MudTd>
+                    <MudTd DataLabel="Player">@context.Name</MudTd>
+                    <MudTd DataLabel="Win Rate" Style="text-align: right;">@context.WinRateLabel</MudTd>
+                    <MudTd DataLabel="Wins" Style="text-align: right;">@context.Wins</MudTd>
+                    <MudTd DataLabel="Points" Style="text-align: right;">@context.Score</MudTd>
+                </RowTemplate>
+            </MudTable>
+
+            <MudText Typo="Typo.h6">Round 1 Pairings</MudText>
+            <MudGrid>
+                @foreach (var pairing in _pairings)
+                {
+                    <MudItem xs="12" md="6">
+                        <MudPaper Class="pa-4 swiss-pairing-card">
+                            <MudStack Spacing="2">
+                                <MudText Typo="Typo.subtitle2">Table @pairing.TableNumber</MudText>
+                                <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
+                                    <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
+                                        #@pairing.PlayerA.Seed
+                                    </MudChip>
+                                    <MudText Typo="Typo.body1">@pairing.PlayerA.Name</MudText>
+                                </MudStack>
+                                @if (pairing.PlayerB is not null)
+                                {
+                                    <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
+                                        <MudChip Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" T="string">
+                                            #@pairing.PlayerB.Seed
+                                        </MudChip>
+                                        <MudText Typo="Typo.body1">@pairing.PlayerB.Name</MudText>
+                                    </MudStack>
+                                }
+                                else
+                                {
+                                    <MudStack Row="true" Class="pairing-row" AlignItems="AlignItems.Center">
+                                        <MudChip Color="Color.Warning" Variant="Variant.Filled" Size="Size.Small" T="string">
+                                            BYE
+                                        </MudChip>
+                                        <MudText Typo="Typo.body1">No opponent this round</MudText>
+                                    </MudStack>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+    }
+</MudStack>
+
+@code {
+    private bool _isReady;
+    private TournamentMatchingMode _matchingMode = TournamentMatchingMode.ClassicSwissStage;
+    private TournamentRankMetric _rankMetric = TournamentRankMetric.WinRate;
+    private List<TournamentSeedRow> _seededPlayers = new();
+    private List<SwissPairing> _pairings = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _isReady = true;
+        GenerateBracket();
+        StateHasChanged();
+    }
+
+    private void GenerateBracket()
+    {
+        var seeded = GetSeededPlayers(_rankMetric);
+        _seededPlayers = seeded.ToList();
+
+        _pairings = _matchingMode switch
+        {
+            TournamentMatchingMode.ClassicSwissStage => BuildClassicSwissRoundOne(_seededPlayers),
+            _ => new List<SwissPairing>()
+        };
+    }
+
+    private IReadOnlyList<TournamentSeedRow> GetSeededPlayers(TournamentRankMetric rankMetric)
+    {
+        var summaries = Tracker.GetPlayerSummaries();
+        IEnumerable<PlayerSummary> sorted = rankMetric switch
+        {
+            TournamentRankMetric.TotalWins => summaries
+                .OrderByDescending(summary => summary.Wins)
+                .ThenByDescending(summary => summary.WinRate)
+                .ThenByDescending(summary => summary.Score)
+                .ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(summary => summary.Name, StringComparer.Ordinal),
+            TournamentRankMetric.Points => summaries
+                .OrderByDescending(summary => summary.Score)
+                .ThenByDescending(summary => summary.WinRate)
+                .ThenByDescending(summary => summary.Wins)
+                .ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(summary => summary.Name, StringComparer.Ordinal),
+            _ => summaries
+                .OrderByDescending(summary => summary.WinRate)
+                .ThenByDescending(summary => summary.Wins)
+                .ThenByDescending(summary => summary.Score)
+                .ThenBy(summary => summary.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(summary => summary.Name, StringComparer.Ordinal)
+        };
+
+        return sorted.Select((summary, index) =>
+            new TournamentSeedRow(
+                Seed: index + 1,
+                PlayerId: summary.PlayerId,
+                Name: summary.Name,
+                Wins: summary.Wins,
+                Losses: summary.Losses,
+                Draws: summary.Draws,
+                Score: summary.Score,
+                WinRateLabel: summary.WinRateLabel))
+            .ToList();
+    }
+
+    private static List<SwissPairing> BuildClassicSwissRoundOne(IReadOnlyList<TournamentSeedRow> seededPlayers)
+    {
+        var pairings = new List<SwissPairing>();
+        if (seededPlayers.Count == 0)
+        {
+            return pairings;
+        }
+
+        var topHalfSize = (seededPlayers.Count + 1) / 2;
+        var tableNumber = 1;
+
+        for (var i = 0; i < topHalfSize; i++)
+        {
+            var topPlayer = seededPlayers[i];
+            var bottomIndex = i + topHalfSize;
+            var bottomPlayer = bottomIndex < seededPlayers.Count ? seededPlayers[bottomIndex] : null;
+            pairings.Add(new SwissPairing(tableNumber, topPlayer, bottomPlayer));
+            tableNumber++;
+        }
+
+        return pairings;
+    }
+
+    private enum TournamentMatchingMode
+    {
+        ClassicSwissStage
+    }
+
+    private enum TournamentRankMetric
+    {
+        WinRate,
+        TotalWins,
+        Points
+    }
+
+    private sealed record TournamentSeedRow(
+        int Seed,
+        Guid PlayerId,
+        string Name,
+        int Wins,
+        int Losses,
+        int Draws,
+        int Score,
+        string WinRateLabel);
+
+    private sealed record SwissPairing(int TableNumber, TournamentSeedRow PlayerA, TournamentSeedRow? PlayerB);
+}
