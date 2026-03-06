@@ -172,6 +172,13 @@ public sealed class MatchTrackerService
             }
 
             _state.CurrentTournament = nextTournament;
+            if (_state.CurrentTournament is not null)
+            {
+                SyncTournamentMatchesLocked(_state.CurrentTournament);
+                _state.Matches = _state.Matches
+                    .OrderByDescending(match => match.PlayedOnUtc)
+                    .ToList();
+            }
         }
     }
 
@@ -241,7 +248,9 @@ public sealed class MatchTrackerService
                     {
                         PlayerId = tournamentMatch.PlayerAId,
                         OpponentId = tournamentMatch.PlayerBId.Value,
-                        Result = resultForPlayerA
+                        Result = resultForPlayerA,
+                        PlayedOnUtc = nowUtc,
+                        SourceTournamentId = _state.CurrentTournament.TournamentId
                     };
                 }
                 else
@@ -251,7 +260,8 @@ public sealed class MatchTrackerService
                         tournamentMatch.PlayerAId,
                         tournamentMatch.PlayerBId.Value,
                         resultForPlayerA,
-                        nowUtc);
+                        nowUtc,
+                        _state.CurrentTournament.TournamentId);
 
                     _state.Matches.Add(created);
                     tournamentMatch.RecordedMatchId = created.Id;
@@ -264,7 +274,8 @@ public sealed class MatchTrackerService
                     tournamentMatch.PlayerAId,
                     tournamentMatch.PlayerBId.Value,
                     resultForPlayerA,
-                    nowUtc);
+                    nowUtc,
+                    _state.CurrentTournament.TournamentId);
 
                 _state.Matches.Add(created);
                 tournamentMatch.RecordedMatchId = created.Id;
@@ -296,13 +307,18 @@ public sealed class MatchTrackerService
 
                 foreach (var match in _state.Matches)
                 {
+                    if (!match.Result.HasValue)
+                    {
+                        continue;
+                    }
+
                     if (match.PlayerId == player.Id)
                     {
-                        CountResult(match.Result, ref wins, ref losses, ref draws);
+                        CountResult(match.Result.Value, ref wins, ref losses, ref draws);
                     }
                     else if (match.OpponentId == player.Id)
                     {
-                        CountResult(Reverse(match.Result), ref wins, ref losses, ref draws);
+                        CountResult(Reverse(match.Result.Value), ref wins, ref losses, ref draws);
                     }
                 }
 
@@ -467,7 +483,8 @@ public sealed class MatchTrackerService
                 playerId.Value,
                 opponentId.Value,
                 result.Value,
-                DateTime.UtcNow);
+                DateTime.UtcNow,
+                null);
 
             _state.Matches.Add(match);
             createdMatchId = match.Id;
@@ -520,7 +537,8 @@ public sealed class MatchTrackerService
             {
                 PlayerId = playerId.Value,
                 OpponentId = opponentId.Value,
-                Result = result.Value
+                Result = result.Value,
+                PlayedOnUtc = nowUtc
             };
 
             var currentTournament = _state.CurrentTournament;
@@ -681,7 +699,7 @@ public sealed class MatchTrackerService
         parsedState.Players ??= new List<Player>();
         parsedState.Matches ??= new List<MatchRecord>();
         parsedState.TournamentHistory ??= new List<TournamentHistorySummary>();
-        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 2);
+        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 3);
 
         var players = parsedState.Players
             .Where(player => player.Id != Guid.Empty)
@@ -703,7 +721,7 @@ public sealed class MatchTrackerService
                 && knownPlayerIds.Contains(match.PlayerId)
                 && knownPlayerIds.Contains(match.OpponentId))
             .Select(match => match.Id == Guid.Empty
-                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, NormalizeUtc(match.PlayedOnUtc))
+                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, NormalizeUtc(match.PlayedOnUtc), match.SourceTournamentId)
                 : match with { PlayedOnUtc = NormalizeUtc(match.PlayedOnUtc) })
             .OrderByDescending(match => match.PlayedOnUtc)
             .ToList();
@@ -712,6 +730,14 @@ public sealed class MatchTrackerService
         if (tournament is null && parsedState.LegacyTournamentBracket is not null)
         {
             tournament = ConvertLegacyBracket(parsedState.LegacyTournamentBracket);
+        }
+
+        if (tournament is not null)
+        {
+            SyncTournamentMatches(tournament, matches);
+            matches = matches
+                .OrderByDescending(match => match.PlayedOnUtc)
+                .ToList();
         }
 
         var history = parsedState.TournamentHistory
@@ -1154,6 +1180,53 @@ public sealed class MatchTrackerService
         };
     }
 
+    private void SyncTournamentMatchesLocked(TournamentSnapshot tournamentSnapshot)
+    {
+        SyncTournamentMatches(tournamentSnapshot, _state.Matches);
+    }
+
+    private static void SyncTournamentMatches(TournamentSnapshot tournamentSnapshot, List<MatchRecord> matches)
+    {
+        foreach (var tournamentMatch in tournamentSnapshot.Rounds.SelectMany(round => round.Matches))
+        {
+            if (tournamentMatch.IsBye || !tournamentMatch.PlayerBId.HasValue || tournamentMatch.PlayerBId.Value == Guid.Empty)
+            {
+                continue;
+            }
+
+            var matchId = tournamentMatch.RecordedMatchId.GetValueOrDefault();
+            var playedOnUtc = tournamentMatch.ReportedOnUtc ?? tournamentSnapshot.GeneratedOnUtc;
+
+            if (matchId != Guid.Empty)
+            {
+                var existingIndex = matches.FindIndex(match => match.Id == matchId);
+                if (existingIndex >= 0)
+                {
+                    matches[existingIndex] = matches[existingIndex] with
+                    {
+                        PlayerId = tournamentMatch.PlayerAId,
+                        OpponentId = tournamentMatch.PlayerBId.Value,
+                        Result = tournamentMatch.ResultForPlayerA,
+                        PlayedOnUtc = playedOnUtc,
+                        SourceTournamentId = tournamentSnapshot.TournamentId
+                    };
+                    continue;
+                }
+            }
+
+            var createdId = matchId == Guid.Empty ? Guid.NewGuid() : matchId;
+            matches.Add(new MatchRecord(
+                createdId,
+                tournamentMatch.PlayerAId,
+                tournamentMatch.PlayerBId.Value,
+                tournamentMatch.ResultForPlayerA,
+                playedOnUtc,
+                tournamentSnapshot.TournamentId));
+
+            tournamentMatch.RecordedMatchId = createdId;
+        }
+    }
+
     private void ArchiveTournamentLocked(TournamentSnapshot tournamentSnapshot, DateTime archivedOnUtc)
     {
         var summary = BuildTournamentHistorySummary(tournamentSnapshot, archivedOnUtc);
@@ -1318,7 +1391,7 @@ public sealed class MatchTrackerService
 
 public sealed class MatchTrackerState
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 3;
     public bool UsePoints { get; set; } = true;
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
@@ -1335,8 +1408,9 @@ public sealed record MatchRecord(
     Guid Id,
     Guid PlayerId,
     Guid OpponentId,
-    MatchResult Result,
-    DateTime PlayedOnUtc);
+    MatchResult? Result,
+    DateTime PlayedOnUtc,
+    Guid? SourceTournamentId);
 
 public sealed record PlayerSummary(
     Guid PlayerId,

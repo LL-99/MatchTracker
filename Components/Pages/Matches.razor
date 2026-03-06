@@ -151,7 +151,7 @@
             <RowTemplate>
                 <MudTd DataLabel="Player">@Tracker.GetPlayerName(context.PlayerId)</MudTd>
                 <MudTd DataLabel="Opponent">@Tracker.GetPlayerName(context.OpponentId)</MudTd>
-                <MudTd DataLabel="Result">@context.Result</MudTd>
+                <MudTd DataLabel="Result">@GetResultLabel(context)</MudTd>
                 <MudTd DataLabel="Played" Style="text-align: right;">@context.PlayedOnUtc.ToLocalTime().ToString("g")</MudTd>
                 <MudTd Style="text-align: right;">
                     <MudStack Row="true" Spacing="1" Justify="Justify.FlexEnd">
@@ -301,8 +301,6 @@
         {
             _editOpponentId = Players.First(player => player.Id != _editPlayerId.Value).Id;
         }
-
-        _editResult ??= MatchResult.Win;
     }
 
     private async Task SaveEditedMatchAsync()
@@ -331,7 +329,7 @@
 
         var confirmed = await DialogService.ShowMessageBox(
             title: "Delete Match",
-            message: $"Delete match {playerName} vs {opponentName} ({match.Result})?",
+            message: $"Delete match {playerName} vs {opponentName} ({GetResultLabel(match)})?",
             yesText: "Delete",
             noText: "Cancel",
             options: new DialogOptions
@@ -359,5 +357,10 @@
         {
             Snackbar.Add(errorMessage, Severity.Error);
         }
+    }
+
+    private static string GetResultLabel(MatchRecord match)
+    {
+        return match.Result?.ToString() ?? "Pending";
     }
 }
