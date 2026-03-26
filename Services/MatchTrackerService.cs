@@ -196,6 +196,26 @@ public sealed class MatchTrackerService
         }
     }
 
+    public bool TryDeleteArchivedTournament(Guid tournamentId, out int removedMatchCount, out string errorMessage)
+    {
+        removedMatchCount = 0;
+
+        lock (_sync)
+        {
+            var removedHistoryEntries = _state.TournamentHistory.RemoveAll(summary => summary.TournamentId == tournamentId);
+            if (removedHistoryEntries == 0)
+            {
+                errorMessage = "Archived tournament not found.";
+                return false;
+            }
+
+            removedMatchCount = _state.Matches.RemoveAll(match => match.SourceTournamentId == tournamentId);
+        }
+
+        errorMessage = string.Empty;
+        return true;
+    }
+
     public bool TryRecordTournamentMatchResult(
         Guid tournamentId,
         int roundNumber,

@@ -3,6 +3,7 @@
 @inject MatchTrackerService Tracker
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
+@inject IDialogService DialogService
 
 <PageTitle>Tournament</PageTitle>
 
@@ -210,6 +211,7 @@
                     <MudTh>Winner</MudTh>
                     <MudTh Style="text-align: right;">Generated</MudTh>
                     <MudTh Style="text-align: right;">Archived</MudTh>
+                    <MudTh Style="text-align: right;"></MudTh>
                 </HeaderContent>
                 <RowTemplate>
                     <MudTd DataLabel="Mode">@GetMatchingModeLabel(context.MatchingMode)</MudTd>
@@ -220,6 +222,13 @@
                     <MudTd DataLabel="Winner">@(context.WinnerName ?? "-")</MudTd>
                     <MudTd DataLabel="Generated" Style="text-align: right;">@context.GeneratedOnUtc.ToLocalTime().ToString("g")</MudTd>
                     <MudTd DataLabel="Archived" Style="text-align: right;">@context.ArchivedOnUtc.ToLocalTime().ToString("g")</MudTd>
+                    <MudTd Style="text-align: right;">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Color="Color.Error"
+                                       Size="Size.Small"
+                                       OnClick="@(() => ConfirmDeleteArchivedTournamentAsync(context))"
+                                       AriaLabel="Delete archived tournament" />
+                    </MudTd>
                 </RowTemplate>
             </MudTable>
         }
@@ -312,6 +321,37 @@
             await Tracker.PersistAsync(JS);
             LoadTournamentState();
             Snackbar.Add("Tournament match result saved.", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private async Task ConfirmDeleteArchivedTournamentAsync(TournamentHistorySummary tournament)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            title: "Delete Archived Tournament",
+            message: $"Delete the {GetMatchingModeLabel(tournament.MatchingMode)} tournament archived on {tournament.ArchivedOnUtc.ToLocalTime():g}? This also removes all recorded matches from that tournament from the overall dataset and updates standings/statistics.",
+            yesText: "Delete",
+            noText: "Cancel",
+            options: new DialogOptions
+            {
+                MaxWidth = MaxWidth.Small,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        if (Tracker.TryDeleteArchivedTournament(tournament.TournamentId, out var removedMatchCount, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            LoadTournamentState();
+            Snackbar.Add($"Archived tournament deleted. Removed {removedMatchCount} recorded matches.", Severity.Info);
         }
         else
         {
