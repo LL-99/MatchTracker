@@ -1,0 +1,12 @@
+.inactive-player-legend {
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 8px;
+    bottom: 1rem;
+    color: #f8fafc;
+    font-size: 0.85rem;
+    left: 1rem;
+    padding: 0.45rem 0.7rem;
+    position: fixed;
+    z-index: 1200;
+}

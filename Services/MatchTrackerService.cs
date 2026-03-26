@@ -1,5 +1,6 @@
 using Microsoft.JSInterop;
 using Newtonsoft.Json;
+using System.ComponentModel;
 
 namespace MatchTracker.Services;
 
@@ -22,21 +23,28 @@ public sealed class MatchTrackerService
             }
         }
 
-        var serializedState = await jsRuntime.InvokeAsync<string?>("localStorage.getItem", LocalStorageKey);
-        if (!TryDeserializeState(serializedState, out var loadedState))
+        try
         {
-            loadedState = new MatchTrackerState();
-        }
-
-        lock (_sync)
-        {
-            if (_isInitialized)
+            var serializedState = await jsRuntime.InvokeAsync<string?>("localStorage.getItem", LocalStorageKey);
+            if (!TryDeserializeState(serializedState, out var loadedState))
             {
-                return;
+                loadedState = new MatchTrackerState();
             }
 
-            _state = loadedState;
-            _isInitialized = true;
+            lock (_sync)
+            {
+                if (_isInitialized)
+                {
+                    return;
+                }
+
+                _state = loadedState;
+                _isInitialized = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error during data loading: " + ex);
         }
     }
 
@@ -109,9 +117,15 @@ public sealed class MatchTrackerService
 
     public IReadOnlyList<Player> GetPlayers()
     {
+        return GetPlayers(includeInactive: false);
+    }
+
+    public IReadOnlyList<Player> GetPlayers(bool includeInactive)
+    {
         lock (_sync)
         {
             return _state.Players
+                .Where(player => includeInactive || player.Active)
                 .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(player => player.Name, StringComparer.Ordinal)
                 .ToList();
@@ -293,13 +307,22 @@ public sealed class MatchTrackerService
 
     public IReadOnlyList<PlayerSummary> GetPlayerSummaries()
     {
+        return GetPlayerSummaries(includeInactive: false);
+    }
+
+    public IReadOnlyList<PlayerSummary> GetPlayerSummaries(bool includeInactive)
+    {
         lock (_sync)
         {
-            var summaries = new List<PlayerSummary>(_state.Players.Count);
-
-            foreach (var player in _state.Players
+            var players = _state.Players
+                .Where(player => includeInactive || player.Active)
                 .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(p => p.Name, StringComparer.Ordinal))
+                .ThenBy(p => p.Name, StringComparer.Ordinal)
+                .ToList();
+
+            var summaries = new List<PlayerSummary>(players.Count);
+
+            foreach (var player in players)
             {
                 var wins = 0;
                 var losses = 0;
@@ -322,7 +345,7 @@ public sealed class MatchTrackerService
                     }
                 }
 
-                summaries.Add(new PlayerSummary(player.Id, player.Name, wins, losses, draws));
+                summaries.Add(new PlayerSummary(player.Id, player.Name, player.Active, wins, losses, draws));
             }
 
             return summaries;
@@ -349,7 +372,12 @@ public sealed class MatchTrackerService
                 return false;
             }
 
-            _state.Players.Add(new Player(Guid.NewGuid(), normalized));
+            _state.Players.Add(new Player
+            {
+                Id = Guid.NewGuid(),
+                Name = normalized,
+                Active = true
+            });
         }
 
         errorMessage = string.Empty;
@@ -429,6 +457,35 @@ public sealed class MatchTrackerService
             }
 
             _state.Players[playerIndex] = _state.Players[playerIndex] with { Name = normalized };
+        }
+
+        errorMessage = string.Empty;
+        return true;
+    }
+
+    public bool TrySetPlayerActive(Guid playerId, bool isActive, out string errorMessage)
+    {
+        var changed = false;
+
+        lock (_sync)
+        {
+            var playerIndex = _state.Players.FindIndex(player => player.Id == playerId);
+            if (playerIndex < 0)
+            {
+                errorMessage = "Player not found.";
+                return false;
+            }
+
+            if (_state.Players[playerIndex].Active != isActive)
+            {
+                _state.Players[playerIndex] = _state.Players[playerIndex] with { Active = isActive };
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            OptionsChanged?.Invoke();
         }
 
         errorMessage = string.Empty;
@@ -620,6 +677,14 @@ public sealed class MatchTrackerService
         }
     }
 
+    public bool IsPlayerActive(Guid playerId)
+    {
+        lock (_sync)
+        {
+            return _state.Players.FirstOrDefault(player => player.Id == playerId)?.Active ?? true;
+        }
+    }
+
     public static MatchResult Reverse(MatchResult result)
     {
         return result switch
@@ -699,7 +764,7 @@ public sealed class MatchTrackerService
         parsedState.Players ??= new List<Player>();
         parsedState.Matches ??= new List<MatchRecord>();
         parsedState.TournamentHistory ??= new List<TournamentHistorySummary>();
-        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 3);
+        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 4);
 
         var players = parsedState.Players
             .Where(player => player.Id != Guid.Empty)
@@ -708,7 +773,14 @@ public sealed class MatchTrackerService
             {
                 var original = group.First();
                 var name = (original.Name ?? string.Empty).Trim();
-                return string.IsNullOrWhiteSpace(name) ? null : new Player(original.Id, name);
+                return string.IsNullOrWhiteSpace(name)
+                    ? null
+                    : new Player
+                    {
+                        Id = original.Id,
+                        Name = name,
+                        Active = original.Active
+                    };
             })
             .Where(player => player is not null)
             .Select(player => player!)
@@ -1391,7 +1463,7 @@ public sealed class MatchTrackerService
 
 public sealed class MatchTrackerState
 {
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
     public bool UsePoints { get; set; } = true;
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
@@ -1402,7 +1474,14 @@ public sealed class MatchTrackerState
     public TournamentBracketSnapshot? LegacyTournamentBracket { get; set; }
 }
 
-public sealed record Player(Guid Id, string Name);
+public sealed record Player
+{
+    public Guid Id { get; init; }
+    public string Name { get; init; } = string.Empty;
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Populate)]
+    [DefaultValue(true)]
+    public bool Active { get; init; } = true;
+}
 
 public sealed record MatchRecord(
     Guid Id,
@@ -1415,6 +1494,7 @@ public sealed record MatchRecord(
 public sealed record PlayerSummary(
     Guid PlayerId,
     string Name,
+    bool Active,
     int Wins,
     int Losses,
     int Draws)

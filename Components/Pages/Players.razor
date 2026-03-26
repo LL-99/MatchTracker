@@ -91,6 +91,12 @@
                             Win Rate
                         </MudTableSortLabel>
                     </MudTh>
+                    <MudTh Style="text-align: center;">
+                        <MudTableSortLabel T="Player"
+                                           SortBy="@(new Func<Player, object>(player => player.Active))">
+                            Active
+                        </MudTableSortLabel>
+                    </MudTh>
                     <MudTh></MudTh>
                 </HeaderContent>
                 <RowTemplate>
@@ -120,6 +126,13 @@
                     <MudTd DataLabel="Losses" Style="text-align: right;">@summary.Losses</MudTd>
                     <MudTd DataLabel="Draws" Style="text-align: right;">@summary.Draws</MudTd>
                     <MudTd DataLabel="Win Rate" Style="text-align: right;">@summary.WinRateLabel</MudTd>
+                    <MudTd DataLabel="Active" Style="text-align: center;">
+                        <MudSwitch T="bool"
+                                   Color="Color.Primary"
+                                   Dense="true"
+                                   Value="@context.Active"
+                                   ValueChanged="@(isActive => TogglePlayerActiveAsync(context, isActive))" />
+                    </MudTd>
                     <MudTd>
                         <MudStack Row="true" Spacing="1">
                             @if (_editingPlayerId == context.Id)
@@ -163,9 +176,9 @@
     private bool _isReady;
     private bool IsPointsEnabled => Tracker.IsPointsEnabled();
 
-    private IReadOnlyList<Player> PlayerList => Tracker.GetPlayers();
+    private IReadOnlyList<Player> PlayerList => Tracker.GetPlayers(includeInactive: true);
 
-    private IReadOnlyList<PlayerSummary> Summaries => Tracker.GetPlayerSummaries();
+    private IReadOnlyList<PlayerSummary> Summaries => Tracker.GetPlayerSummaries(includeInactive: true);
 
     protected override void OnInitialized()
     {
@@ -249,6 +262,21 @@
         }
     }
 
+    private async Task TogglePlayerActiveAsync(Player player, bool isActive)
+    {
+        if (Tracker.TrySetPlayerActive(player.Id, isActive, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            Snackbar.Add(
+                isActive ? $"{player.Name} is now active." : $"{player.Name} is now inactive.",
+                Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
     private async Task ConfirmRemovePlayerAsync(Player player)
     {
         var confirmed = await DialogService.ShowMessageBox(
@@ -286,7 +314,7 @@
     private PlayerSummary GetSummary(Guid playerId)
     {
         return Summaries.FirstOrDefault(summary => summary.PlayerId == playerId)
-            ?? new PlayerSummary(playerId, Tracker.GetPlayerName(playerId), 0, 0, 0);
+            ?? new PlayerSummary(playerId, Tracker.GetPlayerName(playerId), Tracker.IsPlayerActive(playerId), 0, 0, 0);
     }
 
     public void Dispose()

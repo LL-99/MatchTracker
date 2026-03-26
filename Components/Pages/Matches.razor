@@ -16,10 +16,10 @@
             <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
         </MudStack>
     }
-    else if (Players.Count < 2)
+    else if (SelectablePlayers.Count < 2)
     {
         <MudAlert Severity="Severity.Warning" Dense="true">
-            You need at least two players before adding matches.
+            You need at least two active players before adding matches.
         </MudAlert>
     }
     else
@@ -33,7 +33,7 @@
                                Margin="Margin.Dense"
                                Value="_selectedPlayerId"
                                ValueChanged="OnPlayerChanged">
-                        @foreach (var player in Players)
+                        @foreach (var player in SelectablePlayers)
                         {
                             <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
                         }
@@ -72,7 +72,7 @@
         </MudPaper>
     }
 
-    @if (_isReady && _editingMatchId.HasValue && Players.Count >= 2)
+    @if (_isReady && _editingMatchId.HasValue && EditPlayers.Count >= 2)
     {
         <MudPaper Class="pa-4">
             <MudStack Spacing="2">
@@ -85,9 +85,9 @@
                                    Margin="Margin.Dense"
                                    Value="_editPlayerId"
                                    ValueChanged="OnEditPlayerChanged">
-                            @foreach (var player in Players)
+                            @foreach (var player in EditPlayers)
                             {
-                                <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                                <MudSelectItem T="Guid?" Value="@player.Id">@GetPlayerOptionLabel(player)</MudSelectItem>
                             }
                         </MudSelect>
                     </MudItem>
@@ -99,7 +99,7 @@
                                    @bind-Value="_editOpponentId">
                             @foreach (var player in EditOpponentOptions)
                             {
-                                <MudSelectItem T="Guid?" Value="@player.Id">@player.Name</MudSelectItem>
+                                <MudSelectItem T="Guid?" Value="@player.Id">@GetPlayerOptionLabel(player)</MudSelectItem>
                             }
                         </MudSelect>
                     </MudItem>
@@ -149,8 +149,8 @@
                 <MudTh Style="text-align: right;"></MudTh>
             </HeaderContent>
             <RowTemplate>
-                <MudTd DataLabel="Player">@Tracker.GetPlayerName(context.PlayerId)</MudTd>
-                <MudTd DataLabel="Opponent">@Tracker.GetPlayerName(context.OpponentId)</MudTd>
+                <MudTd DataLabel="Player">@GetPlayerDisplayName(context.PlayerId)</MudTd>
+                <MudTd DataLabel="Opponent">@GetPlayerDisplayName(context.OpponentId)</MudTd>
                 <MudTd DataLabel="Result">@GetResultLabel(context)</MudTd>
                 <MudTd DataLabel="Played" Style="text-align: right;">@context.PlayedOnUtc.ToLocalTime().ToString("g")</MudTd>
                 <MudTd Style="text-align: right;">
@@ -170,6 +170,11 @@
             </RowTemplate>
         </MudTable>
     }
+
+    @if (_isReady && MatchRows.Any(HasInactivePlayer))
+    {
+        <div class="inactive-player-legend">* inactive player</div>
+    }
 </MudStack>
 
 @code {
@@ -182,13 +187,23 @@
     private MatchResult? _editResult = MatchResult.Win;
     private bool _isReady;
 
-    private IReadOnlyList<Player> Players => Tracker.GetPlayers();
+    private IReadOnlyList<Player> SelectablePlayers => Tracker.GetPlayers();
+
+    private IReadOnlyList<Player> AllPlayers => Tracker.GetPlayers(includeInactive: true);
+
+    private IReadOnlyList<Player> EditPlayers => AllPlayers
+        .Where(player => player.Active
+            || (_editPlayerId.HasValue && player.Id == _editPlayerId.Value)
+            || (_editOpponentId.HasValue && player.Id == _editOpponentId.Value))
+        .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(player => player.Name, StringComparer.Ordinal)
+        .ToList();
 
     private IReadOnlyList<Player> OpponentOptions =>
-        Players.Where(player => !_selectedPlayerId.HasValue || player.Id != _selectedPlayerId.Value).ToList();
+        SelectablePlayers.Where(player => !_selectedPlayerId.HasValue || player.Id != _selectedPlayerId.Value).ToList();
 
     private IReadOnlyList<Player> EditOpponentOptions =>
-        Players.Where(player => !_editPlayerId.HasValue || player.Id != _editPlayerId.Value).ToList();
+        EditPlayers.Where(player => !_editPlayerId.HasValue || player.Id != _editPlayerId.Value).ToList();
 
     private IReadOnlyList<MatchRecord> MatchRows => Tracker.GetMatches();
 
@@ -224,23 +239,23 @@
 
     private void EnsureSelections()
     {
-        if (Players.Count < 2)
+        if (SelectablePlayers.Count < 2)
         {
             _selectedPlayerId = null;
             _selectedOpponentId = null;
             return;
         }
 
-        if (!_selectedPlayerId.HasValue || Players.All(player => player.Id != _selectedPlayerId.Value))
+        if (!_selectedPlayerId.HasValue || SelectablePlayers.All(player => player.Id != _selectedPlayerId.Value))
         {
-            _selectedPlayerId = Players[0].Id;
+            _selectedPlayerId = SelectablePlayers[0].Id;
         }
 
         if (!_selectedOpponentId.HasValue
             || _selectedOpponentId == _selectedPlayerId
-            || Players.All(player => player.Id != _selectedOpponentId.Value))
+            || SelectablePlayers.All(player => player.Id != _selectedOpponentId.Value))
         {
-            _selectedOpponentId = Players.First(player => player.Id != _selectedPlayerId.Value).Id;
+            _selectedOpponentId = SelectablePlayers.First(player => player.Id != _selectedPlayerId.Value).Id;
         }
 
         _selectedResult ??= MatchResult.Win;
@@ -284,22 +299,22 @@
             return;
         }
 
-        if (Players.Count < 2)
+        if (EditPlayers.Count < 2)
         {
             CancelEditMatch();
             return;
         }
 
-        if (!_editPlayerId.HasValue || Players.All(player => player.Id != _editPlayerId.Value))
+        if (!_editPlayerId.HasValue || EditPlayers.All(player => player.Id != _editPlayerId.Value))
         {
-            _editPlayerId = Players[0].Id;
+            _editPlayerId = EditPlayers[0].Id;
         }
 
         if (!_editOpponentId.HasValue
             || _editOpponentId == _editPlayerId
-            || Players.All(player => player.Id != _editOpponentId.Value))
+            || EditPlayers.All(player => player.Id != _editOpponentId.Value))
         {
-            _editOpponentId = Players.First(player => player.Id != _editPlayerId.Value).Id;
+            _editOpponentId = EditPlayers.First(player => player.Id != _editPlayerId.Value).Id;
         }
     }
 
@@ -362,5 +377,21 @@
     private static string GetResultLabel(MatchRecord match)
     {
         return match.Result?.ToString() ?? "Pending";
+    }
+
+    private string GetPlayerDisplayName(Guid playerId)
+    {
+        var name = Tracker.GetPlayerName(playerId);
+        return Tracker.IsPlayerActive(playerId) ? name : $"{name}*";
+    }
+
+    private static string GetPlayerOptionLabel(Player player)
+    {
+        return player.Active ? player.Name : $"{player.Name}*";
+    }
+
+    private bool HasInactivePlayer(MatchRecord match)
+    {
+        return !Tracker.IsPlayerActive(match.PlayerId) || !Tracker.IsPlayerActive(match.OpponentId);
     }
 }
