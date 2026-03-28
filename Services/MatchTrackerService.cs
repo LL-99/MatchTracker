@@ -188,6 +188,7 @@ public sealed class MatchTrackerService
             _state.CurrentTournament = nextTournament;
             if (_state.CurrentTournament is not null)
             {
+                ResolveKnockoutBracketLocked(_state.CurrentTournament);
                 SyncTournamentMatchesLocked(_state.CurrentTournament);
                 _state.Matches = _state.Matches
                     .OrderByDescending(match => match.PlayedOnUtc)
@@ -263,6 +264,12 @@ public sealed class MatchTrackerService
                 return false;
             }
 
+            if (_state.CurrentTournament.MatchingMode == TournamentMatchingMode.Knockout && resultForPlayerA == MatchResult.Draw)
+            {
+                errorMessage = "Knockout matches must have a winner.";
+                return false;
+            }
+
             var playerExists = _state.Players.Any(p => p.Id == tournamentMatch.PlayerAId);
             var opponentExists = _state.Players.Any(p => p.Id == tournamentMatch.PlayerBId.Value);
             if (!playerExists || !opponentExists)
@@ -321,6 +328,7 @@ public sealed class MatchTrackerService
             tournamentMatch.ResultForPlayerA = resultForPlayerA;
             tournamentMatch.ReportedOnUtc = nowUtc;
 
+            ResolveKnockoutBracketLocked(_state.CurrentTournament);
             UpdateTournamentCompletionLocked(_state.CurrentTournament, nowUtc);
         }
 
@@ -878,12 +886,17 @@ public sealed class MatchTrackerService
                         {
                             MatchId = match.MatchId,
                             TableNumber = match.TableNumber,
+                            MatchLabel = match.MatchLabel,
                             PlayerASeed = match.PlayerASeed,
                             PlayerAId = match.PlayerAId,
                             PlayerAName = match.PlayerAName,
+                            PlayerASourceMatchId = match.PlayerASourceMatchId,
+                            PlayerASourceType = match.PlayerASourceType,
                             PlayerBSeed = match.PlayerBSeed,
                             PlayerBId = match.PlayerBId,
                             PlayerBName = match.PlayerBName,
+                            PlayerBSourceMatchId = match.PlayerBSourceMatchId,
+                            PlayerBSourceType = match.PlayerBSourceType,
                             IsBye = match.IsBye,
                             ResultForPlayerA = match.ResultForPlayerA,
                             ReportedOnUtc = match.ReportedOnUtc,
@@ -967,7 +980,8 @@ public sealed class MatchTrackerService
             {
                 round.Matches ??= new List<TournamentMatchSnapshot>();
                 var matches = round.Matches
-                    .Where(match => match.TableNumber > 0 && match.PlayerAId != Guid.Empty && !string.IsNullOrWhiteSpace(match.PlayerAName))
+                    .Where(match => match.TableNumber > 0 &&
+                        (!string.IsNullOrWhiteSpace(match.PlayerAName) || match.PlayerASourceMatchId.HasValue))
                     .Select(match => SanitizeTournamentMatch(match, seedOrder))
                     .Where(match => match is not null)
                     .Select(match => match!)
@@ -1011,44 +1025,49 @@ public sealed class MatchTrackerService
         IReadOnlySet<Guid> seededPlayerIds)
     {
         var playerAName = (parsedMatch.PlayerAName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(playerAName))
+        var hasPlayerASource = parsedMatch.PlayerASourceMatchId.HasValue && parsedMatch.PlayerASourceMatchId.Value != Guid.Empty;
+        if (string.IsNullOrWhiteSpace(playerAName) && !hasPlayerASource)
         {
             return null;
         }
 
-        if (!seededPlayerIds.Contains(parsedMatch.PlayerAId))
+        var playerAId = parsedMatch.PlayerAId;
+        if (playerAId != Guid.Empty && !seededPlayerIds.Contains(playerAId))
         {
             return null;
         }
 
-        var isBye = parsedMatch.IsBye || !parsedMatch.PlayerBId.HasValue || parsedMatch.PlayerBId.Value == Guid.Empty;
+        var isBye = parsedMatch.IsBye || (!parsedMatch.PlayerBId.HasValue && !parsedMatch.PlayerBSourceMatchId.HasValue);
 
         Guid? playerBId = null;
         int? playerBSeed = null;
         string? playerBName = null;
         MatchResult? result = parsedMatch.ResultForPlayerA;
+        var hasPlayerBSource = parsedMatch.PlayerBSourceMatchId.HasValue && parsedMatch.PlayerBSourceMatchId.Value != Guid.Empty;
 
         if (!isBye)
         {
-            if (parsedMatch.PlayerBId == parsedMatch.PlayerAId)
+            if (parsedMatch.PlayerBId == parsedMatch.PlayerAId && parsedMatch.PlayerBId.HasValue && parsedMatch.PlayerBId.Value != Guid.Empty)
             {
                 return null;
             }
 
             var normalizedPlayerBName = (parsedMatch.PlayerBName ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(normalizedPlayerBName))
+            if (string.IsNullOrWhiteSpace(normalizedPlayerBName) && !hasPlayerBSource)
             {
                 return null;
             }
 
-            if (!seededPlayerIds.Contains(parsedMatch.PlayerBId.Value))
+            if (parsedMatch.PlayerBId.HasValue && parsedMatch.PlayerBId.Value != Guid.Empty && !seededPlayerIds.Contains(parsedMatch.PlayerBId.Value))
             {
                 return null;
             }
 
-            playerBId = parsedMatch.PlayerBId.Value;
-            playerBSeed = parsedMatch.PlayerBSeed.GetValueOrDefault();
-            playerBName = normalizedPlayerBName;
+            playerBId = parsedMatch.PlayerBId.HasValue && parsedMatch.PlayerBId.Value != Guid.Empty
+                ? parsedMatch.PlayerBId.Value
+                : null;
+            playerBSeed = parsedMatch.PlayerBSeed.HasValue ? Math.Max(parsedMatch.PlayerBSeed.Value, 0) : null;
+            playerBName = string.IsNullOrWhiteSpace(normalizedPlayerBName) ? null : normalizedPlayerBName;
 
             if (result.HasValue && !Enum.IsDefined(result.Value))
             {
@@ -1060,16 +1079,28 @@ public sealed class MatchTrackerService
             result = MatchResult.Win;
         }
 
+        if (playerAId == Guid.Empty || (!isBye && playerBId is null))
+        {
+            result = null;
+        }
+
         return new TournamentMatchSnapshot
         {
             MatchId = parsedMatch.MatchId == Guid.Empty ? Guid.NewGuid() : parsedMatch.MatchId,
             TableNumber = parsedMatch.TableNumber,
-            PlayerASeed = Math.Max(parsedMatch.PlayerASeed, 1),
-            PlayerAId = parsedMatch.PlayerAId,
-            PlayerAName = playerAName,
+            MatchLabel = string.IsNullOrWhiteSpace(parsedMatch.MatchLabel) ? null : parsedMatch.MatchLabel.Trim(),
+            PlayerASeed = Math.Max(parsedMatch.PlayerASeed, 0),
+            PlayerAId = playerAId,
+            PlayerAName = string.IsNullOrWhiteSpace(playerAName)
+                ? BuildPendingParticipantLabel(parsedMatch.PlayerASourceType, parsedMatch.PlayerASourceMatchId)
+                : playerAName,
+            PlayerASourceMatchId = hasPlayerASource ? parsedMatch.PlayerASourceMatchId : null,
+            PlayerASourceType = hasPlayerASource ? parsedMatch.PlayerASourceType : null,
             PlayerBSeed = playerBSeed,
             PlayerBId = playerBId,
-            PlayerBName = playerBName,
+            PlayerBName = playerBName ?? BuildPendingParticipantLabel(parsedMatch.PlayerBSourceType, parsedMatch.PlayerBSourceMatchId),
+            PlayerBSourceMatchId = hasPlayerBSource ? parsedMatch.PlayerBSourceMatchId : null,
+            PlayerBSourceType = hasPlayerBSource ? parsedMatch.PlayerBSourceType : null,
             IsBye = isBye,
             ResultForPlayerA = result,
             ReportedOnUtc = parsedMatch.ReportedOnUtc.HasValue
@@ -1133,12 +1164,17 @@ public sealed class MatchTrackerService
             {
                 MatchId = Guid.NewGuid(),
                 TableNumber = tableNumber,
+                MatchLabel = null,
                 PlayerASeed = topPlayer.Seed,
                 PlayerAId = topPlayer.PlayerId,
                 PlayerAName = topPlayer.Name,
+                PlayerASourceMatchId = null,
+                PlayerASourceType = null,
                 PlayerBSeed = bottomPlayer?.Seed,
                 PlayerBId = bottomPlayer?.PlayerId,
                 PlayerBName = bottomPlayer?.Name,
+                PlayerBSourceMatchId = null,
+                PlayerBSourceType = null,
                 IsBye = bottomPlayer is null,
                 ResultForPlayerA = bottomPlayer is null ? MatchResult.Win : null,
                 ReportedOnUtc = bottomPlayer is null ? generatedOnUtc : null,
@@ -1175,12 +1211,17 @@ public sealed class MatchTrackerService
                         {
                             MatchId = match.MatchId,
                             TableNumber = match.TableNumber,
+                            MatchLabel = match.MatchLabel,
                             PlayerASeed = match.PlayerASeed,
                             PlayerAId = match.PlayerAId,
                             PlayerAName = match.PlayerAName,
+                            PlayerASourceMatchId = match.PlayerASourceMatchId,
+                            PlayerASourceType = match.PlayerASourceType,
                             PlayerBSeed = match.PlayerBSeed,
                             PlayerBId = match.PlayerBId,
                             PlayerBName = match.PlayerBName,
+                            PlayerBSourceMatchId = match.PlayerBSourceMatchId,
+                            PlayerBSourceType = match.PlayerBSourceType,
                             IsBye = match.IsBye,
                             ResultForPlayerA = match.ResultForPlayerA,
                             ReportedOnUtc = match.ReportedOnUtc,
@@ -1333,6 +1374,157 @@ public sealed class MatchTrackerService
         };
     }
 
+    private void ResolveKnockoutBracketLocked(TournamentSnapshot tournamentSnapshot)
+    {
+        if (tournamentSnapshot.MatchingMode != TournamentMatchingMode.Knockout)
+        {
+            return;
+        }
+
+        var matchesById = tournamentSnapshot.Rounds
+            .SelectMany(round => round.Matches)
+            .ToDictionary(match => match.MatchId);
+
+        foreach (var round in tournamentSnapshot.Rounds.OrderBy(round => round.RoundNumber))
+        {
+            foreach (var match in round.Matches.OrderBy(match => match.TableNumber))
+            {
+                ResolveParticipantSlotLocked(match, isPlayerA: true, matchesById);
+                ResolveParticipantSlotLocked(match, isPlayerA: false, matchesById);
+
+                match.IsBye = match.PlayerAId != Guid.Empty && !match.PlayerBId.HasValue && !match.PlayerBSourceMatchId.HasValue;
+                if (match.IsBye)
+                {
+                    if (match.RecordedMatchId.HasValue)
+                    {
+                        _state.Matches.RemoveAll(existing => existing.Id == match.RecordedMatchId.Value);
+                        match.RecordedMatchId = null;
+                    }
+
+                    match.ResultForPlayerA = MatchResult.Win;
+                    match.ReportedOnUtc ??= tournamentSnapshot.GeneratedOnUtc;
+                }
+                else if (match.PlayerAId == Guid.Empty || !match.PlayerBId.HasValue || match.PlayerBId.Value == Guid.Empty)
+                {
+                    ClearDependentRecordedMatchLocked(match);
+                }
+            }
+        }
+    }
+
+    private void ResolveParticipantSlotLocked(
+        TournamentMatchSnapshot match,
+        bool isPlayerA,
+        IReadOnlyDictionary<Guid, TournamentMatchSnapshot> matchesById)
+    {
+        var sourceMatchId = isPlayerA ? match.PlayerASourceMatchId : match.PlayerBSourceMatchId;
+        var sourceType = isPlayerA ? match.PlayerASourceType : match.PlayerBSourceType;
+        if (!sourceMatchId.HasValue || !sourceType.HasValue || !matchesById.TryGetValue(sourceMatchId.Value, out var sourceMatch))
+        {
+            return;
+        }
+
+        var participant = TryResolveDependentParticipant(sourceMatch, sourceType.Value);
+        if (participant is null)
+        {
+            SetParticipant(match, isPlayerA, 0, Guid.Empty, BuildPendingParticipantLabel(sourceType, sourceMatchId));
+            ClearDependentRecordedMatchLocked(match);
+            return;
+        }
+
+        var changed = isPlayerA
+            ? match.PlayerAId != participant.PlayerId || match.PlayerASeed != participant.Seed || !string.Equals(match.PlayerAName, participant.Name, StringComparison.Ordinal)
+            : match.PlayerBId != participant.PlayerId || match.PlayerBSeed != participant.Seed || !string.Equals(match.PlayerBName, participant.Name, StringComparison.Ordinal);
+
+        SetParticipant(match, isPlayerA, participant.Seed, participant.PlayerId, participant.Name);
+
+        if (changed)
+        {
+            ClearDependentRecordedMatchLocked(match);
+        }
+    }
+
+    private void ClearDependentRecordedMatchLocked(TournamentMatchSnapshot match)
+    {
+        if (match.RecordedMatchId.HasValue)
+        {
+            _state.Matches.RemoveAll(existing => existing.Id == match.RecordedMatchId.Value);
+        }
+
+        match.RecordedMatchId = null;
+        if (!match.IsBye)
+        {
+            match.ResultForPlayerA = null;
+            match.ReportedOnUtc = null;
+        }
+    }
+
+    private static void SetParticipant(TournamentMatchSnapshot match, bool isPlayerA, int seed, Guid playerId, string name)
+    {
+        if (isPlayerA)
+        {
+            match.PlayerASeed = seed;
+            match.PlayerAId = playerId;
+            match.PlayerAName = name;
+        }
+        else
+        {
+            match.PlayerBSeed = seed <= 0 ? null : seed;
+            match.PlayerBId = playerId == Guid.Empty ? null : playerId;
+            match.PlayerBName = name;
+        }
+    }
+
+    private static ResolvedTournamentParticipant? TryResolveDependentParticipant(
+        TournamentMatchSnapshot sourceMatch,
+        TournamentMatchParticipantSourceType sourceType)
+    {
+        if (sourceType == TournamentMatchParticipantSourceType.Winner)
+        {
+            if (sourceMatch.IsBye)
+            {
+                return sourceMatch.PlayerAId == Guid.Empty
+                    ? null
+                    : new ResolvedTournamentParticipant(sourceMatch.PlayerASeed, sourceMatch.PlayerAId, sourceMatch.PlayerAName);
+            }
+
+            return sourceMatch.ResultForPlayerA switch
+            {
+                MatchResult.Win when sourceMatch.PlayerAId != Guid.Empty => new ResolvedTournamentParticipant(sourceMatch.PlayerASeed, sourceMatch.PlayerAId, sourceMatch.PlayerAName),
+                MatchResult.Loss when sourceMatch.PlayerBId.HasValue && sourceMatch.PlayerBId.Value != Guid.Empty =>
+                    new ResolvedTournamentParticipant(sourceMatch.PlayerBSeed.GetValueOrDefault(), sourceMatch.PlayerBId.Value, sourceMatch.PlayerBName ?? string.Empty),
+                _ => null
+            };
+        }
+
+        if (sourceMatch.IsBye)
+        {
+            return null;
+        }
+
+        return sourceMatch.ResultForPlayerA switch
+        {
+            MatchResult.Loss when sourceMatch.PlayerAId != Guid.Empty => new ResolvedTournamentParticipant(sourceMatch.PlayerASeed, sourceMatch.PlayerAId, sourceMatch.PlayerAName),
+            MatchResult.Win when sourceMatch.PlayerBId.HasValue && sourceMatch.PlayerBId.Value != Guid.Empty =>
+                new ResolvedTournamentParticipant(sourceMatch.PlayerBSeed.GetValueOrDefault(), sourceMatch.PlayerBId.Value, sourceMatch.PlayerBName ?? string.Empty),
+            _ => null
+        };
+    }
+
+    private static string BuildPendingParticipantLabel(
+        TournamentMatchParticipantSourceType? sourceType,
+        Guid? sourceMatchId)
+    {
+        if (!sourceType.HasValue || !sourceMatchId.HasValue || sourceMatchId.Value == Guid.Empty)
+        {
+            return "TBD";
+        }
+
+        return sourceType.Value == TournamentMatchParticipantSourceType.Winner
+            ? "Winner TBD"
+            : "Loser TBD";
+    }
+
     private void SyncTournamentMatchesLocked(TournamentSnapshot tournamentSnapshot)
     {
         SyncTournamentMatches(tournamentSnapshot, _state.Matches);
@@ -1342,7 +1534,10 @@ public sealed class MatchTrackerService
     {
         foreach (var tournamentMatch in tournamentSnapshot.Rounds.SelectMany(round => round.Matches))
         {
-            if (tournamentMatch.IsBye || !tournamentMatch.PlayerBId.HasValue || tournamentMatch.PlayerBId.Value == Guid.Empty)
+            if (tournamentMatch.IsBye
+                || tournamentMatch.PlayerAId == Guid.Empty
+                || !tournamentMatch.PlayerBId.HasValue
+                || tournamentMatch.PlayerBId.Value == Guid.Empty)
             {
                 continue;
             }
@@ -1437,12 +1632,17 @@ public sealed class MatchTrackerService
                         {
                             MatchId = match.MatchId,
                             TableNumber = match.TableNumber,
+                            MatchLabel = match.MatchLabel,
                             PlayerASeed = match.PlayerASeed,
                             PlayerAId = match.PlayerAId,
                             PlayerAName = match.PlayerAName,
+                            PlayerASourceMatchId = match.PlayerASourceMatchId,
+                            PlayerASourceType = match.PlayerASourceType,
                             PlayerBSeed = match.PlayerBSeed,
                             PlayerBId = match.PlayerBId,
                             PlayerBName = match.PlayerBName,
+                            PlayerBSourceMatchId = match.PlayerBSourceMatchId,
+                            PlayerBSourceType = match.PlayerBSourceType,
                             IsBye = match.IsBye,
                             ResultForPlayerA = match.ResultForPlayerA,
                             ReportedOnUtc = match.ReportedOnUtc,
@@ -1632,7 +1832,14 @@ public enum TournamentMatchingMode
 {
     ClassicSwissStage,
     MonradSwiss,
-    RoundRobin
+    RoundRobin,
+    Knockout
+}
+
+public enum TournamentMatchParticipantSourceType
+{
+    Winner,
+    Loser
 }
 
 public enum TournamentRankMetric
@@ -1664,12 +1871,17 @@ public sealed class TournamentMatchSnapshot
 {
     public Guid MatchId { get; set; } = Guid.NewGuid();
     public int TableNumber { get; set; }
+    public string? MatchLabel { get; set; }
     public int PlayerASeed { get; set; }
     public Guid PlayerAId { get; set; }
     public string PlayerAName { get; set; } = string.Empty;
+    public Guid? PlayerASourceMatchId { get; set; }
+    public TournamentMatchParticipantSourceType? PlayerASourceType { get; set; }
     public int? PlayerBSeed { get; set; }
     public Guid? PlayerBId { get; set; }
     public string? PlayerBName { get; set; }
+    public Guid? PlayerBSourceMatchId { get; set; }
+    public TournamentMatchParticipantSourceType? PlayerBSourceType { get; set; }
     public bool IsBye { get; set; }
     public MatchResult? ResultForPlayerA { get; set; }
     public DateTime? ReportedOnUtc { get; set; }
@@ -1709,3 +1921,5 @@ public sealed record TournamentSeedSnapshot(
     int Draws,
     int Score,
     string WinRateLabel);
+
+sealed record ResolvedTournamentParticipant(int Seed, Guid PlayerId, string Name);
