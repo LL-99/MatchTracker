@@ -155,7 +155,7 @@
                                                 @match.MatchLabel
                                             </MudChip>
                                         }
-                                        <MudText Typo="Typo.caption">Table @match.TableNumber</MudText>
+                                        <MudText Typo="Typo.caption">Match @match.TableNumber</MudText>
                                         <MudStack Row="true" AlignItems="AlignItems.Center" Class="pairing-row">
                                             @if (HasResolvedPlayerA(match))
                                             {
@@ -1324,7 +1324,7 @@
             .Select(match =>
             {
                 var prefix = string.IsNullOrWhiteSpace(match.MatchLabel)
-                    ? $"T{match.TableNumber}: "
+                    ? $"Match {match.TableNumber}: "
                     : $"{match.MatchLabel}: ";
 
                 return match.IsBye
