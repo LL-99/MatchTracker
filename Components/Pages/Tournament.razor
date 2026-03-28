@@ -275,6 +275,14 @@
                                                 </MudText>
                                             </MudStack>
                                         }
+
+                                        <MudDivider Class="my-2" />
+                                        <MudStack Row="true" AlignItems="AlignItems.Start" Spacing="1">
+                                            <MudText Typo="Typo.subtitle2">Final Scores</MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @GetArchivedFinalScoreSummary(context)
+                                            </MudText>
+                                        </MudStack>
                                     }
                                 </MudPaper>
                             </td>
@@ -995,6 +1003,76 @@
         };
     }
 
+    private static string GetArchivedFinalScoreSummary(TournamentHistorySummary tournament)
+    {
+        var scores = tournament.Rounds
+            .SelectMany(round => round.Matches)
+            .Aggregate(new Dictionary<Guid, ArchivedTournamentScoreRow>(), (rows, match) =>
+            {
+                if (!rows.TryGetValue(match.PlayerAId, out var rowA))
+                {
+                    rowA = new ArchivedTournamentScoreRow(match.PlayerAId, match.PlayerAName);
+                    rows[match.PlayerAId] = rowA;
+                }
+
+                if (match.IsBye)
+                {
+                    rowA.Wins++;
+                    rowA.Points += 3;
+                    return rows;
+                }
+
+                if (!match.PlayerBId.HasValue)
+                {
+                    return rows;
+                }
+
+                if (!rows.TryGetValue(match.PlayerBId.Value, out var rowB))
+                {
+                    rowB = new ArchivedTournamentScoreRow(match.PlayerBId.Value, match.PlayerBName ?? "Unknown Player");
+                    rows[match.PlayerBId.Value] = rowB;
+                }
+
+                if (!match.ResultForPlayerA.HasValue)
+                {
+                    return rows;
+                }
+
+                switch (match.ResultForPlayerA.Value)
+                {
+                    case MatchResult.Win:
+                        rowA.Wins++;
+                        rowA.Points += 3;
+                        rowB.Losses++;
+                        break;
+                    case MatchResult.Loss:
+                        rowA.Losses++;
+                        rowB.Wins++;
+                        rowB.Points += 3;
+                        break;
+                    default:
+                        rowA.Draws++;
+                        rowB.Draws++;
+                        rowA.Points++;
+                        rowB.Points++;
+                        break;
+                }
+
+                return rows;
+            })
+            .Values
+            .OrderByDescending(row => row.Points)
+            .ThenByDescending(row => row.Wins)
+            .ThenBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Name, StringComparer.Ordinal)
+            .Select(row => $"{row.Name} {row.Points} pts")
+            .ToList();
+
+        return scores.Count == 0
+            ? "No score data available."
+            : string.Join(" | ", scores);
+    }
+
     private static (bool CanGenerate, string? DisabledReason) EvaluateNewRoundAvailability(
         TournamentSnapshot tournament,
         IReadOnlyList<TournamentStandingRow> standings)
@@ -1098,6 +1176,22 @@
         public int Seed { get; set; }
         public Guid PlayerId { get; set; }
         public string Name { get; set; } = string.Empty;
+        public int Wins { get; set; }
+        public int Losses { get; set; }
+        public int Draws { get; set; }
+        public int Points { get; set; }
+    }
+
+    private sealed class ArchivedTournamentScoreRow
+    {
+        public ArchivedTournamentScoreRow(Guid playerId, string name)
+        {
+            PlayerId = playerId;
+            Name = name;
+        }
+
+        public Guid PlayerId { get; }
+        public string Name { get; }
         public int Wins { get; set; }
         public int Losses { get; set; }
         public int Draws { get; set; }
