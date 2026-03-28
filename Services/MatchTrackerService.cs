@@ -1639,7 +1639,8 @@ public enum TournamentRankMetric
 {
     WinRate,
     TotalWins,
-    Points
+    Points,
+    Random
 }
 
 public sealed class TournamentSnapshot

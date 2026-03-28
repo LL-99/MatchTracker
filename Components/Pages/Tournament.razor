@@ -40,6 +40,7 @@
                         <MudSelectItem Value="@TournamentRankMetric.WinRate">Win Rate</MudSelectItem>
                         <MudSelectItem Value="@TournamentRankMetric.TotalWins">Total Wins</MudSelectItem>
                         <MudSelectItem Value="@TournamentRankMetric.Points">Points</MudSelectItem>
+                        <MudSelectItem Value="@TournamentRankMetric.Random">Random</MudSelectItem>
                     </MudSelect>
                 </MudItem>
                 <MudItem xs="12" md="4">
@@ -550,6 +551,23 @@
     private IReadOnlyList<TournamentSeedSnapshot> GetSeededPlayers(TournamentRankMetric rankMetric)
     {
         var summaries = Tracker.GetPlayerSummaries();
+        if (rankMetric == TournamentRankMetric.Random)
+        {
+            return summaries
+                .OrderBy(_ => Random.Shared.Next())
+                .Select((summary, index) =>
+                    new TournamentSeedSnapshot(
+                        index + 1,
+                        summary.PlayerId,
+                        summary.Name,
+                        0,
+                        0,
+                        0,
+                        PlayerSummary.StartingScore,
+                        BuildWinRateLabel(0, 0, 0)))
+                .ToList();
+        }
+
         IEnumerable<PlayerSummary> sorted = rankMetric switch
         {
             TournamentRankMetric.TotalWins => summaries
@@ -975,6 +993,7 @@
         {
             TournamentRankMetric.TotalWins => "Total Wins",
             TournamentRankMetric.Points => "Points",
+            TournamentRankMetric.Random => "Random",
             _ => "Win Rate"
         };
     }
