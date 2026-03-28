@@ -74,6 +74,11 @@
 
             <MudStack Row="true" Justify="Justify.FlexEnd" Class="mb-2">
                 <MudButton Variant="Variant.Outlined"
+                           Color="Color.Error"
+                           OnClick="DiscardTournamentAsync">
+                    Discard Tournament
+                </MudButton>
+                <MudButton Variant="Variant.Outlined"
                            Color="Color.Warning"
                            OnClick="FinishTournamentAsync">
                     Finish Tournament
@@ -508,6 +513,42 @@
         await Tracker.PersistAsync(JS);
         LoadTournamentState();
         Snackbar.Add("Tournament archived.", Severity.Info);
+    }
+
+    private async Task DiscardTournamentAsync()
+    {
+        if (_currentTournament is null)
+        {
+            return;
+        }
+
+        var confirmed = await DialogService.ShowMessageBox(
+            title: "Discard Tournament",
+            message: "Delete the active tournament and all matches recorded for it? This does not archive the tournament and cannot be undone.",
+            yesText: "Discard",
+            noText: "Cancel",
+            options: new DialogOptions
+            {
+                MaxWidth = MaxWidth.Small,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        if (Tracker.TryDiscardCurrentTournament(out var removedMatchCount, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            LoadTournamentState();
+            Snackbar.Add($"Tournament discarded. Removed {removedMatchCount} associated matches.", Severity.Warning);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
     }
 
     private async Task ConfirmDeleteArchivedTournamentAsync(TournamentHistorySummary tournament)

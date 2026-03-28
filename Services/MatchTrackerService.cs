@@ -217,6 +217,27 @@ public sealed class MatchTrackerService
         return true;
     }
 
+    public bool TryDiscardCurrentTournament(out int removedMatchCount, out string errorMessage)
+    {
+        removedMatchCount = 0;
+
+        lock (_sync)
+        {
+            if (_state.CurrentTournament is null)
+            {
+                errorMessage = "No active tournament found.";
+                return false;
+            }
+
+            var tournamentId = _state.CurrentTournament.TournamentId;
+            removedMatchCount = _state.Matches.RemoveAll(match => match.SourceTournamentId == tournamentId);
+            _state.CurrentTournament = null;
+        }
+
+        errorMessage = string.Empty;
+        return true;
+    }
+
     public bool TryRecordTournamentMatchResult(
         Guid tournamentId,
         int roundNumber,
