@@ -219,7 +219,11 @@
         }
         else
         {
-            <MudTable T="TournamentHistorySummary" Items="_history" Hover="true" Dense="true">
+            <MudTable T="TournamentHistorySummary"
+                      Items="_history"
+                      Hover="true"
+                      Dense="true"
+                      OnRowClick="HandleArchivedTournamentRowClick">
                 <HeaderContent>
                     <MudTh>Mode</MudTh>
                     <MudTh>Metric</MudTh>
@@ -248,6 +252,35 @@
                                        AriaLabel="Delete archived tournament" />
                     </MudTd>
                 </RowTemplate>
+                <ChildRowContent>
+                    @if (_expandedArchivedTournamentIds.Contains(context.TournamentId))
+                    {
+                        <MudTr>
+                            <td colspan="9" class="pa-0">
+                                <MudPaper Class="pa-3 ma-2">
+                                    @if (context.Rounds.Count == 0)
+                                    {
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                            No archived round details are available for this tournament.
+                                        </MudText>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var round in context.Rounds.OrderBy(round => round.RoundNumber))
+                                        {
+                                            <MudStack Row="true" AlignItems="AlignItems.Start" Spacing="1" Class="mb-2">
+                                                <MudText Typo="Typo.subtitle2">Round @round.RoundNumber</MudText>
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                    @GetArchivedRoundSummary(round)
+                                                </MudText>
+                                            </MudStack>
+                                        }
+                                    }
+                                </MudPaper>
+                            </td>
+                        </MudTr>
+                    }
+                </ChildRowContent>
             </MudTable>
         }
     }
@@ -260,6 +293,7 @@
     private TournamentSnapshot? _currentTournament;
     private List<TournamentStandingRow> _standings = new();
     private List<TournamentHistorySummary> _history = new();
+    private HashSet<Guid> _expandedArchivedTournamentIds = new();
     private bool _canGenerateNewRound;
     private string? _newRoundDisabledReason;
 
@@ -464,6 +498,24 @@
         else
         {
             Snackbar.Add(errorMessage, Severity.Error);
+        }
+    }
+
+    private void HandleArchivedTournamentRowClick(TableRowClickEventArgs<TournamentHistorySummary> args)
+    {
+        if (args.Item is null)
+        {
+            return;
+        }
+
+        ToggleArchivedTournamentExpansion(args.Item.TournamentId);
+    }
+
+    private void ToggleArchivedTournamentExpansion(Guid tournamentId)
+    {
+        if (!_expandedArchivedTournamentIds.Add(tournamentId))
+        {
+            _expandedArchivedTournamentIds.Remove(tournamentId);
         }
     }
 
@@ -916,6 +968,30 @@
             TournamentRankMetric.TotalWins => "Total Wins",
             TournamentRankMetric.Points => "Points",
             _ => "Win Rate"
+        };
+    }
+
+    private static string GetArchivedRoundSummary(TournamentRoundSnapshot round)
+    {
+        return string.Join(" | ", round.Matches
+            .OrderBy(match => match.TableNumber)
+            .Select(match => match.IsBye
+                ? $"T{match.TableNumber}: {match.PlayerAName} bye"
+                : $"T{match.TableNumber}: {match.PlayerAName} vs {match.PlayerBName} ({GetArchivedMatchOutcome(match)})"));
+    }
+
+    private static string GetArchivedMatchOutcome(TournamentMatchSnapshot match)
+    {
+        if (!match.ResultForPlayerA.HasValue)
+        {
+            return "pending";
+        }
+
+        return match.ResultForPlayerA.Value switch
+        {
+            MatchResult.Win => $"{match.PlayerAName} won",
+            MatchResult.Loss => $"{match.PlayerBName} won",
+            _ => "draw"
         };
     }
 

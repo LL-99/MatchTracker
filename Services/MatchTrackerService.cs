@@ -284,7 +284,8 @@ public sealed class MatchTrackerService
                         OpponentId = tournamentMatch.PlayerBId.Value,
                         Result = resultForPlayerA,
                         PlayedOnUtc = nowUtc,
-                        SourceTournamentId = _state.CurrentTournament.TournamentId
+                        SourceTournamentId = _state.CurrentTournament.TournamentId,
+                        TournamentRoundNumber = roundNumber
                     };
                 }
                 else
@@ -295,7 +296,8 @@ public sealed class MatchTrackerService
                         tournamentMatch.PlayerBId.Value,
                         resultForPlayerA,
                         nowUtc,
-                        _state.CurrentTournament.TournamentId);
+                        _state.CurrentTournament.TournamentId,
+                        roundNumber);
 
                     _state.Matches.Add(created);
                     tournamentMatch.RecordedMatchId = created.Id;
@@ -309,7 +311,8 @@ public sealed class MatchTrackerService
                     tournamentMatch.PlayerBId.Value,
                     resultForPlayerA,
                     nowUtc,
-                    _state.CurrentTournament.TournamentId);
+                    _state.CurrentTournament.TournamentId,
+                    roundNumber);
 
                 _state.Matches.Add(created);
                 tournamentMatch.RecordedMatchId = created.Id;
@@ -813,8 +816,12 @@ public sealed class MatchTrackerService
                 && knownPlayerIds.Contains(match.PlayerId)
                 && knownPlayerIds.Contains(match.OpponentId))
             .Select(match => match.Id == Guid.Empty
-                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, NormalizeUtc(match.PlayedOnUtc), match.SourceTournamentId)
-                : match with { PlayedOnUtc = NormalizeUtc(match.PlayedOnUtc) })
+                ? new MatchRecord(Guid.NewGuid(), match.PlayerId, match.OpponentId, match.Result, NormalizeUtc(match.PlayedOnUtc), match.SourceTournamentId, match.TournamentRoundNumber)
+                : match with
+                {
+                    PlayedOnUtc = NormalizeUtc(match.PlayedOnUtc),
+                    TournamentRoundNumber = Math.Max(match.TournamentRoundNumber, 0)
+                })
             .OrderByDescending(match => match.PlayedOnUtc)
             .ToList();
 
@@ -1158,7 +1165,30 @@ public sealed class MatchTrackerService
             TotalRounds = summary.TotalRounds,
             TotalMatches = summary.TotalMatches,
             CompletedMatches = summary.CompletedMatches,
-            WinnerName = summary.WinnerName
+            WinnerName = summary.WinnerName,
+            Rounds = summary.Rounds
+                .Select(round => new TournamentRoundSnapshot
+                {
+                    RoundNumber = round.RoundNumber,
+                    Matches = round.Matches
+                        .Select(match => new TournamentMatchSnapshot
+                        {
+                            MatchId = match.MatchId,
+                            TableNumber = match.TableNumber,
+                            PlayerASeed = match.PlayerASeed,
+                            PlayerAId = match.PlayerAId,
+                            PlayerAName = match.PlayerAName,
+                            PlayerBSeed = match.PlayerBSeed,
+                            PlayerBId = match.PlayerBId,
+                            PlayerBName = match.PlayerBName,
+                            IsBye = match.IsBye,
+                            ResultForPlayerA = match.ResultForPlayerA,
+                            ReportedOnUtc = match.ReportedOnUtc,
+                            RecordedMatchId = match.RecordedMatchId
+                        })
+                        .ToList()
+                })
+                .ToList()
         };
     }
 
@@ -1187,6 +1217,36 @@ public sealed class MatchTrackerService
             : TournamentRankMetric.WinRate;
 
         var winnerName = (parsedSummary.WinnerName ?? string.Empty).Trim();
+        parsedSummary.Rounds ??= new List<TournamentRoundSnapshot>();
+        var roundSeedOrder = parsedSummary.Rounds
+            .SelectMany(round => round.Matches)
+            .Select(match => match.PlayerAId)
+            .Where(id => id != Guid.Empty)
+            .Concat(parsedSummary.Rounds
+                .SelectMany(round => round.Matches)
+                .Where(match => match.PlayerBId.HasValue)
+                .Select(match => match.PlayerBId!.Value))
+            .ToHashSet();
+        var rounds = parsedSummary.Rounds
+            .Where(round => round.RoundNumber > 0)
+            .Select(round =>
+            {
+                round.Matches ??= new List<TournamentMatchSnapshot>();
+                return new TournamentRoundSnapshot
+                {
+                    RoundNumber = round.RoundNumber,
+                    Matches = round.Matches
+                        .Where(match => match.TableNumber > 0 && match.PlayerAId != Guid.Empty && !string.IsNullOrWhiteSpace(match.PlayerAName))
+                        .Select(match => SanitizeTournamentMatch(match, roundSeedOrder))
+                        .Where(match => match is not null)
+                        .Select(match => match!)
+                        .OrderBy(match => match.TableNumber)
+                        .ToList()
+                };
+            })
+            .Where(round => round.Matches.Count > 0)
+            .OrderBy(round => round.RoundNumber)
+            .ToList();
 
         return new TournamentHistorySummary
         {
@@ -1202,7 +1262,8 @@ public sealed class MatchTrackerService
             TotalRounds = parsedSummary.TotalRounds,
             TotalMatches = parsedSummary.TotalMatches,
             CompletedMatches = Math.Min(parsedSummary.CompletedMatches, parsedSummary.TotalMatches),
-            WinnerName = string.IsNullOrWhiteSpace(winnerName) ? null : winnerName
+            WinnerName = string.IsNullOrWhiteSpace(winnerName) ? null : winnerName,
+            Rounds = rounds
         };
     }
 
@@ -1300,7 +1361,9 @@ public sealed class MatchTrackerService
                         OpponentId = tournamentMatch.PlayerBId.Value,
                         Result = tournamentMatch.ResultForPlayerA,
                         PlayedOnUtc = playedOnUtc,
-                        SourceTournamentId = tournamentSnapshot.TournamentId
+                        SourceTournamentId = tournamentSnapshot.TournamentId,
+                        TournamentRoundNumber = tournamentSnapshot.Rounds
+                            .FirstOrDefault(round => round.Matches.Contains(tournamentMatch))?.RoundNumber ?? 0
                     };
                     continue;
                 }
@@ -1313,7 +1376,8 @@ public sealed class MatchTrackerService
                 tournamentMatch.PlayerBId.Value,
                 tournamentMatch.ResultForPlayerA,
                 playedOnUtc,
-                tournamentSnapshot.TournamentId));
+                tournamentSnapshot.TournamentId,
+                tournamentSnapshot.Rounds.FirstOrDefault(round => round.Matches.Contains(tournamentMatch))?.RoundNumber ?? 0));
 
             tournamentMatch.RecordedMatchId = createdId;
         }
@@ -1361,7 +1425,32 @@ public sealed class MatchTrackerService
             TotalRounds = tournamentSnapshot.Rounds.Count,
             TotalMatches = totalMatches,
             CompletedMatches = completedMatches,
-            WinnerName = winner?.Name
+            WinnerName = winner?.Name,
+            Rounds = tournamentSnapshot.Rounds
+                .OrderBy(round => round.RoundNumber)
+                .Select(round => new TournamentRoundSnapshot
+                {
+                    RoundNumber = round.RoundNumber,
+                    Matches = round.Matches
+                        .OrderBy(match => match.TableNumber)
+                        .Select(match => new TournamentMatchSnapshot
+                        {
+                            MatchId = match.MatchId,
+                            TableNumber = match.TableNumber,
+                            PlayerASeed = match.PlayerASeed,
+                            PlayerAId = match.PlayerAId,
+                            PlayerAName = match.PlayerAName,
+                            PlayerBSeed = match.PlayerBSeed,
+                            PlayerBId = match.PlayerBId,
+                            PlayerBName = match.PlayerBName,
+                            IsBye = match.IsBye,
+                            ResultForPlayerA = match.ResultForPlayerA,
+                            ReportedOnUtc = match.ReportedOnUtc,
+                            RecordedMatchId = match.RecordedMatchId
+                        })
+                        .ToList()
+                })
+                .ToList()
         };
     }
 
@@ -1509,7 +1598,8 @@ public sealed record MatchRecord(
     Guid OpponentId,
     MatchResult? Result,
     DateTime PlayedOnUtc,
-    Guid? SourceTournamentId);
+    Guid? SourceTournamentId,
+    int TournamentRoundNumber = 0);
 
 public sealed record PlayerSummary(
     Guid PlayerId,
@@ -1598,6 +1688,7 @@ public sealed class TournamentHistorySummary
     public int TotalMatches { get; set; }
     public int CompletedMatches { get; set; }
     public string? WinnerName { get; set; }
+    public List<TournamentRoundSnapshot> Rounds { get; set; } = new();
 }
 
 public sealed class TournamentBracketSnapshot
