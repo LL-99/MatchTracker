@@ -682,26 +682,93 @@
 
     private static List<TournamentMatchSnapshot> BuildClassicSwissRound(
         IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
+        IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents,
+        IReadOnlyDictionary<Guid, bool> hasBye,
         DateTime generatedOnUtc)
     {
-        var matches = new List<TournamentMatchSnapshot>();
         if (seededPlayers.Count == 0)
         {
-            return matches;
+            return new List<TournamentMatchSnapshot>();
         }
 
-        var topHalfSize = (seededPlayers.Count + 1) / 2;
+        var ordered = seededPlayers
+            .OrderByDescending(seed => seed.Score)
+            .ThenByDescending(seed => seed.Wins)
+            .ThenBy(seed => seed.Seed)
+            .ToList();
+        TournamentSeedSnapshot? byePlayer = null;
 
-        for (var i = 0; i < topHalfSize; i++)
+        if (ordered.Count % 2 != 0)
         {
-            var playerA = seededPlayers[i];
-            var playerBIndex = i + topHalfSize;
-            var playerB = playerBIndex < seededPlayers.Count ? seededPlayers[playerBIndex] : null;
+            byePlayer = ordered.LastOrDefault(seed => !hasBye.GetValueOrDefault(seed.PlayerId))
+                ?? ordered[^1];
+            ordered.Remove(byePlayer);
+        }
 
-            matches.Add(BuildMatch(i + 1, playerA, playerB, generatedOnUtc));
+        if (!TryCreateSwissPairs(ordered, previousOpponents, out var pairs))
+        {
+            return new List<TournamentMatchSnapshot>();
+        }
+
+        var matches = new List<TournamentMatchSnapshot>();
+        var tableNumber = 1;
+
+        foreach (var pair in pairs)
+        {
+            matches.Add(BuildMatch(tableNumber, pair.PlayerA, pair.PlayerB, generatedOnUtc));
+            tableNumber++;
+        }
+
+        if (byePlayer is not null)
+        {
+            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc));
         }
 
         return matches;
+    }
+
+    private static bool TryCreateSwissPairs(
+        IReadOnlyList<TournamentSeedSnapshot> players,
+        IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents,
+        out List<(TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot PlayerB)> pairs)
+    {
+        pairs = new List<(TournamentSeedSnapshot PlayerA, TournamentSeedSnapshot PlayerB)>();
+
+        if (players.Count == 0)
+        {
+            return true;
+        }
+
+        var first = players[0];
+        var candidates = players
+            .Skip(1)
+            .OrderByDescending(candidate => candidate.Score == first.Score)
+            .ThenByDescending(candidate => candidate.Wins)
+            .ThenBy(candidate => candidate.Seed)
+            .ToList();
+
+        foreach (var candidate in candidates)
+        {
+            if (previousOpponents[first.PlayerId].Contains(candidate.PlayerId))
+            {
+                continue;
+            }
+
+            var remaining = players
+                .Where(player => player.PlayerId != first.PlayerId && player.PlayerId != candidate.PlayerId)
+                .ToList();
+
+            if (!TryCreateSwissPairs(remaining, previousOpponents, out var tailPairs))
+            {
+                continue;
+            }
+
+            pairs.Add((first, candidate));
+            pairs.AddRange(tailPairs);
+            return true;
+        }
+
+        return false;
     }
 
     private static List<TournamentRoundSnapshot> BuildKnockoutRounds(
@@ -957,7 +1024,7 @@
             TournamentMatchingMode.Knockout => new List<TournamentMatchSnapshot>(),
             TournamentMatchingMode.RoundRobin => BuildRoundRobinRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc),
             TournamentMatchingMode.MonradSwiss => BuildMonradRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc),
-            _ => BuildClassicSwissRound(seededPlayers, generatedOnUtc)
+            _ => BuildClassicSwissRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc)
         };
 
         return matches.Count == 0
@@ -1447,6 +1514,7 @@
         var canGenerate = tournament.MatchingMode switch
         {
             TournamentMatchingMode.RoundRobin => CanBuildRoundRobinRound(tournament, reseededPlayers),
+            TournamentMatchingMode.ClassicSwissStage => CanBuildClassicSwissRound(tournament, reseededPlayers),
             _ => reseededPlayers.Count > 0
         };
 
@@ -1470,6 +1538,27 @@
         }
 
         return TryCreateUniquePairs(ordered, BuildPreviousOpponents(tournament), out _);
+    }
+
+    private static bool CanBuildClassicSwissRound(
+        TournamentSnapshot tournament,
+        IReadOnlyList<TournamentSeedSnapshot> seededPlayers)
+    {
+        var ordered = seededPlayers
+            .OrderByDescending(seed => seed.Score)
+            .ThenByDescending(seed => seed.Wins)
+            .ThenBy(seed => seed.Seed)
+            .ToList();
+        var hasBye = BuildByeHistory(tournament);
+
+        if (ordered.Count % 2 != 0)
+        {
+            var byePlayer = ordered.LastOrDefault(seed => !hasBye.GetValueOrDefault(seed.PlayerId))
+                ?? ordered[^1];
+            ordered.Remove(byePlayer);
+        }
+
+        return TryCreateSwissPairs(ordered, BuildPreviousOpponents(tournament), out _);
     }
 
     private static TournamentRoundSnapshot? GetCurrentRound(TournamentSnapshot tournament)
