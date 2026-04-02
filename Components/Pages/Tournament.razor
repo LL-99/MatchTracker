@@ -142,7 +142,18 @@
             @foreach (var round in _currentTournament.Rounds.OrderBy(round => round.RoundNumber))
             {
                 <MudPaper Class="pa-4 tournament-round-card">
-                    <MudText Typo="Typo.subtitle1" Class="mb-3">@GetRoundDisplayLabel(_currentTournament, round)</MudText>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+                        <MudText Typo="Typo.subtitle1">@GetRoundDisplayLabel(_currentTournament, round)</MudText>
+                        @if (CanDeleteRound(_currentTournament, round))
+                        {
+                            <MudButton Variant="Variant.Outlined"
+                                       Color="Color.Error"
+                                       Size="Size.Small"
+                                       OnClick="@(() => DeleteMostRecentRoundAsync(round.RoundNumber))">
+                                Delete Round
+                            </MudButton>
+                        }
+                    </MudStack>
                     <MudGrid>
                         @foreach (var match in round.Matches.OrderBy(match => match.TableNumber))
                         {
@@ -513,6 +524,52 @@
         await Tracker.PersistAsync(JS);
         LoadTournamentState();
         Snackbar.Add("Tournament archived.", Severity.Info);
+    }
+
+    private async Task DeleteMostRecentRoundAsync(int roundNumber)
+    {
+        if (_currentTournament is null)
+        {
+            return;
+        }
+
+        var latestRoundNumber = _currentTournament.Rounds.Count == 0
+            ? 0
+            : _currentTournament.Rounds.Max(round => round.RoundNumber);
+
+        if (roundNumber != latestRoundNumber || _currentTournament.MatchingMode == TournamentMatchingMode.Knockout)
+        {
+            Snackbar.Add("Only the latest non-knockout round can be deleted.", Severity.Warning);
+            return;
+        }
+
+        var confirmed = await DialogService.ShowMessageBox(
+            title: "Delete Round",
+            message: $"Delete round {roundNumber}? Any recorded matches from this round will also be removed.",
+            yesText: "Delete",
+            noText: "Cancel",
+            options: new DialogOptions
+            {
+                MaxWidth = MaxWidth.Small,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        if (Tracker.TryDeleteMostRecentTournamentRound(_currentTournament.TournamentId, out var removedMatchCount, out var errorMessage))
+        {
+            await Tracker.PersistAsync(JS);
+            LoadTournamentState();
+            Snackbar.Add($"Round {roundNumber} deleted. Removed {removedMatchCount} recorded matches.", Severity.Info);
+        }
+        else
+        {
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
     }
 
     private async Task DiscardTournamentAsync()
@@ -1574,6 +1631,20 @@
     private static bool IsRoundComplete(TournamentRoundSnapshot round)
     {
         return round.Matches.All(match => match.IsBye || match.ResultForPlayerA.HasValue);
+    }
+
+    private static bool CanDeleteRound(TournamentSnapshot tournament, TournamentRoundSnapshot round)
+    {
+        if (tournament.MatchingMode == TournamentMatchingMode.Knockout)
+        {
+            return false;
+        }
+
+        var latestRoundNumber = tournament.Rounds.Count == 0
+            ? 0
+            : tournament.Rounds.Max(candidate => candidate.RoundNumber);
+
+        return round.RoundNumber == latestRoundNumber;
     }
 
     private static List<TournamentSeedSnapshot> BuildSeededPlayersFromStandings(

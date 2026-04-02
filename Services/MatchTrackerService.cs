@@ -357,6 +357,61 @@ public sealed class MatchTrackerService
         return true;
     }
 
+    public bool TryDeleteMostRecentTournamentRound(Guid tournamentId, out int removedMatchCount, out string errorMessage)
+    {
+        removedMatchCount = 0;
+
+        lock (_sync)
+        {
+            if (_state.CurrentTournament is null)
+            {
+                errorMessage = "No active tournament found.";
+                return false;
+            }
+
+            if (_state.CurrentTournament.TournamentId != tournamentId)
+            {
+                errorMessage = "This tournament is no longer active.";
+                return false;
+            }
+
+            if (_state.CurrentTournament.MatchingMode == TournamentMatchingMode.Knockout)
+            {
+                errorMessage = "Knockout rounds cannot be deleted.";
+                return false;
+            }
+
+            var latestRound = _state.CurrentTournament.Rounds
+                .OrderByDescending(round => round.RoundNumber)
+                .FirstOrDefault();
+
+            if (latestRound is null)
+            {
+                errorMessage = "No round found.";
+                return false;
+            }
+
+            var recordedMatchIds = latestRound.Matches
+                .Where(match => match.RecordedMatchId.HasValue)
+                .Select(match => match.RecordedMatchId!.Value)
+                .ToHashSet();
+
+            if (recordedMatchIds.Count > 0)
+            {
+                removedMatchCount = _state.Matches.RemoveAll(match => recordedMatchIds.Contains(match.Id));
+            }
+
+            _state.CurrentTournament.Rounds.RemoveAll(round => round.RoundNumber == latestRound.RoundNumber);
+            _state.CurrentTournament.Rounds = _state.CurrentTournament.Rounds
+                .OrderBy(round => round.RoundNumber)
+                .ToList();
+            UpdateTournamentCompletionLocked(_state.CurrentTournament, DateTime.UtcNow);
+        }
+
+        errorMessage = string.Empty;
+        return true;
+    }
+
     public IReadOnlyList<PlayerSummary> GetPlayerSummaries()
     {
         return GetPlayerSummaries(includeInactive: false);
@@ -1614,12 +1669,24 @@ public sealed class MatchTrackerService
 
     private static TournamentHistorySummary BuildTournamentHistorySummary(TournamentSnapshot tournamentSnapshot, DateTime archivedOnUtc)
     {
-        var standings = BuildTournamentStandings(tournamentSnapshot).ToList();
-        var totalMatches = tournamentSnapshot.Rounds
+        var archivedRounds = TrimTrailingUnstartedRounds(tournamentSnapshot.Rounds);
+        var archivedTournament = new TournamentSnapshot
+        {
+            TournamentId = tournamentSnapshot.TournamentId,
+            MatchingMode = tournamentSnapshot.MatchingMode,
+            RankMetric = tournamentSnapshot.RankMetric,
+            GeneratedOnUtc = tournamentSnapshot.GeneratedOnUtc,
+            CompletedOnUtc = tournamentSnapshot.CompletedOnUtc,
+            Seeds = tournamentSnapshot.Seeds.Select(seed => seed with { }).ToList(),
+            Rounds = archivedRounds
+        };
+
+        var standings = BuildTournamentStandings(archivedTournament).ToList();
+        var totalMatches = archivedTournament.Rounds
             .SelectMany(round => round.Matches)
             .Count(match => !match.IsBye);
 
-        var completedMatches = tournamentSnapshot.Rounds
+        var completedMatches = archivedTournament.Rounds
             .SelectMany(round => round.Matches)
             .Count(match => !match.IsBye && match.ResultForPlayerA.HasValue);
 
@@ -1638,11 +1705,11 @@ public sealed class MatchTrackerService
             ArchivedOnUtc = NormalizeUtc(archivedOnUtc),
             CompletedOnUtc = tournamentSnapshot.CompletedOnUtc,
             PlayerCount = tournamentSnapshot.Seeds.Count,
-            TotalRounds = tournamentSnapshot.Rounds.Count,
+            TotalRounds = archivedTournament.Rounds.Count,
             TotalMatches = totalMatches,
             CompletedMatches = completedMatches,
             WinnerName = winner?.Name,
-            Rounds = tournamentSnapshot.Rounds
+            Rounds = archivedTournament.Rounds
                 .OrderBy(round => round.RoundNumber)
                 .Select(round => new TournamentRoundSnapshot
                 {
@@ -1673,6 +1740,54 @@ public sealed class MatchTrackerService
                 })
                 .ToList()
         };
+    }
+
+    private static List<TournamentRoundSnapshot> TrimTrailingUnstartedRounds(IReadOnlyList<TournamentRoundSnapshot> rounds)
+    {
+        var trimmed = rounds
+            .OrderBy(round => round.RoundNumber)
+            .Select(round => new TournamentRoundSnapshot
+            {
+                RoundNumber = round.RoundNumber,
+                Matches = round.Matches
+                    .OrderBy(match => match.TableNumber)
+                    .Select(match => new TournamentMatchSnapshot
+                    {
+                        MatchId = match.MatchId,
+                        TableNumber = match.TableNumber,
+                        MatchLabel = match.MatchLabel,
+                        PlayerASeed = match.PlayerASeed,
+                        PlayerAId = match.PlayerAId,
+                        PlayerAName = match.PlayerAName,
+                        PlayerASourceMatchId = match.PlayerASourceMatchId,
+                        PlayerASourceType = match.PlayerASourceType,
+                        PlayerBSeed = match.PlayerBSeed,
+                        PlayerBId = match.PlayerBId,
+                        PlayerBName = match.PlayerBName,
+                        PlayerBSourceMatchId = match.PlayerBSourceMatchId,
+                        PlayerBSourceType = match.PlayerBSourceType,
+                        IsBye = match.IsBye,
+                        ResultForPlayerA = match.ResultForPlayerA,
+                        ReportedOnUtc = match.ReportedOnUtc,
+                        RecordedMatchId = match.RecordedMatchId
+                    })
+                    .ToList()
+            })
+            .ToList();
+
+        while (trimmed.Count > 0 && IsRoundUnstarted(trimmed[^1]))
+        {
+            trimmed.RemoveAt(trimmed.Count - 1);
+        }
+
+        return trimmed;
+    }
+
+    private static bool IsRoundUnstarted(TournamentRoundSnapshot round)
+    {
+        return round.Matches
+            .Where(match => !match.IsBye)
+            .All(match => !match.ResultForPlayerA.HasValue);
     }
 
     private static IEnumerable<TournamentStandingRow> BuildTournamentStandings(TournamentSnapshot tournamentSnapshot)
