@@ -20,12 +20,17 @@ window.matchTrackerInterop.pickJsonFile = () =>
         input.style.display = "none";
 
         let isSettled = false;
+        let focusFallbackId = null;
         const settle = (value) => {
             if (isSettled) {
                 return;
             }
 
             isSettled = true;
+            if (focusFallbackId) {
+                window.clearTimeout(focusFallbackId);
+            }
+
             window.removeEventListener("focus", onFocus);
             if (input.parentNode) {
                 input.parentNode.removeChild(input);
@@ -34,11 +39,15 @@ window.matchTrackerInterop.pickJsonFile = () =>
         };
 
         const onFocus = () => {
-            setTimeout(() => {
-                if (!input.files || input.files.length === 0) {
+            if (focusFallbackId) {
+                window.clearTimeout(focusFallbackId);
+            }
+
+            focusFallbackId = window.setTimeout(() => {
+                if (!isSettled && document.hasFocus() && (!input.files || input.files.length === 0)) {
                     settle(null);
                 }
-            }, 250);
+            }, 5000);
         };
 
         input.addEventListener(
@@ -57,6 +66,7 @@ window.matchTrackerInterop.pickJsonFile = () =>
             },
             { once: true }
         );
+        input.addEventListener("cancel", () => settle(null), { once: true });
 
         window.addEventListener("focus", onFocus);
         document.body.appendChild(input);
