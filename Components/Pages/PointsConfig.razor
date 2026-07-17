@@ -1,0 +1,126 @@
+@page "/elo-config"
+@page "/points-config"
+
+@inject MatchTrackerService Tracker
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+<PageTitle>ELO Config</PageTitle>
+
+<MudStack Spacing="3" Class="points-config-page">
+    <MudText Typo="Typo.h4">ELO Configuration</MudText>
+
+    @if (!_isReady)
+    {
+        <MudStack Row="true" Justify="Justify.Center" Class="mt-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">
+            Saving recalculates every player's current ELO from their full match history.
+        </MudAlert>
+
+        <MudPaper Class="pa-5 points-config-card">
+            <MudStack Spacing="4">
+                <MudSwitch T="bool"
+                           Color="Color.Primary"
+                           @bind-Value="_draft.UsePoints">
+                    Use ELO ratings
+                </MudSwitch>
+
+                <MudDivider />
+
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int"
+                                         Label="Starting ELO per player"
+                                         HelperText="Applied before any recorded matches."
+                                         Variant="Variant.Outlined"
+                                         Min="0"
+                                         @bind-Value="_draft.StartingPoints" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int"
+                                         Label="Point change on win"
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="_draft.PointChangeOnWin" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int"
+                                         Label="Point change on loss"
+                                         HelperText="Use a negative value to reduce ELO."
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="_draft.PointChangeOnLoss" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int"
+                                         Label="Point change on draw"
+                                         HelperText="May be positive, zero, or negative."
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="_draft.PointChangeOnDraw" />
+                    </MudItem>
+                </MudGrid>
+
+                <MudPaper Outlined="true" Class="pa-3 points-formula">
+                    <MudText Typo="Typo.subtitle2">Current formula</MudText>
+                    <MudText Typo="Typo.body2">
+                        @_draft.StartingPoints + (wins × @_draft.PointChangeOnWin) + (losses × @_draft.PointChangeOnLoss) + (draws × @_draft.PointChangeOnDraw)
+                    </MudText>
+                </MudPaper>
+
+                <MudStack Row="true" Justify="Justify.FlexEnd">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Save"
+                               Disabled="_isSaving"
+                               OnClick="SaveAsync">
+                        Save and recalculate
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    }
+</MudStack>
+
+@code {
+    private bool _isReady;
+    private bool _isSaving;
+    private PointsConfiguration _draft = PointsConfiguration.CreateDefault();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await Tracker.EnsureInitializedAsync(JS);
+        _draft = Tracker.GetPointsConfiguration();
+        _isReady = true;
+        StateHasChanged();
+    }
+
+    private async Task SaveAsync()
+    {
+        _isSaving = true;
+
+        try
+        {
+            if (!Tracker.TrySavePointsConfiguration(_draft, out var errorMessage))
+            {
+                Snackbar.Add(errorMessage, Severity.Error);
+                return;
+            }
+
+            await Tracker.PersistAsync(JS);
+            _draft = Tracker.GetPointsConfiguration();
+            Snackbar.Add("ELO configuration saved and player ratings recalculated.", Severity.Success);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+}

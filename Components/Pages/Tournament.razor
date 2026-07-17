@@ -20,7 +20,7 @@
     {
         <MudPaper Class="pa-4">
             <MudGrid AlignItems="AlignItems.End">
-                <MudItem xs="12" md="4">
+                <MudItem xs="12" md="3">
                     <MudSelect T="TournamentMatchingMode"
                                Label="Matching mode"
                                Variant="Variant.Outlined"
@@ -32,7 +32,7 @@
                         <MudSelectItem Value="@TournamentMatchingMode.Knockout">Knockout</MudSelectItem>
                     </MudSelect>
                 </MudItem>
-                <MudItem xs="12" md="4">
+                <MudItem xs="12" md="3">
                     <MudSelect T="TournamentRankMetric"
                                Label="Seed players by"
                                Variant="Variant.Outlined"
@@ -44,7 +44,18 @@
                         <MudSelectItem Value="@TournamentRankMetric.Random">Random</MudSelectItem>
                     </MudSelect>
                 </MudItem>
-                <MudItem xs="12" md="4">
+                <MudItem xs="12" md="3">
+                    <MudSelect T="TournamentUnmatchedPlayerResult"
+                               Label="If a player has no match"
+                               HelperText="No score / point change creates no saved match."
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               @bind-Value="_unmatchedPlayerResult">
+                        <MudSelectItem Value="@TournamentUnmatchedPlayerResult.NoScoreChange">No score / point change</MudSelectItem>
+                        <MudSelectItem Value="@TournamentUnmatchedPlayerResult.AutoWin">Automatic win</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="3">
                     <MudButton Variant="Variant.Filled"
                                Color="Color.Primary"
                                FullWidth="true"
@@ -66,6 +77,7 @@
             <MudAlert Severity="Severity.Info" Dense="true">
                 Active tournament generated on @_currentTournament.GeneratedOnUtc.ToLocalTime().ToString("g")
                 using @GetMatchingModeLabel(_currentTournament.MatchingMode) and @GetRankMetricLabel(_currentTournament.RankMetric).
+                Unmatched players: @GetUnmatchedPlayerResultLabel(_currentTournament.UnmatchedPlayerResult).
                 @if (_currentTournament.CompletedOnUtc.HasValue)
                 {
                     <span> Completed on @_currentTournament.CompletedOnUtc.Value.ToLocalTime().ToString("g").</span>
@@ -183,7 +195,7 @@
                                         {
                                             <MudStack Row="true" AlignItems="AlignItems.Center" Class="pairing-row">
                                                 <MudChip Color="Color.Warning" Variant="Variant.Filled" Size="Size.Small" T="string">BYE</MudChip>
-                                                <MudText Typo="Typo.body2">Automatic win</MudText>
+                                                <MudText Typo="Typo.body2">@(match.ResultForPlayerA == MatchResult.Win ? "Automatic win" : "No score or point change")</MudText>
                                             </MudStack>
                                         }
                                         else if (!IsMatchReadyToPlay(match))
@@ -346,6 +358,7 @@
     private bool _isReady;
     private TournamentMatchingMode _matchingMode = TournamentMatchingMode.ClassicSwissStage;
     private TournamentRankMetric _rankMetric = TournamentRankMetric.WinRate;
+    private TournamentUnmatchedPlayerResult _unmatchedPlayerResult = TournamentUnmatchedPlayerResult.NoScoreChange;
     private TournamentSnapshot? _currentTournament;
     private List<TournamentStandingRow> _standings = new();
     private List<TournamentHistorySummary> _history = new();
@@ -375,6 +388,7 @@
         {
             _matchingMode = _currentTournament.MatchingMode;
             _rankMetric = _currentTournament.RankMetric;
+            _unmatchedPlayerResult = _currentTournament.UnmatchedPlayerResult;
             _standings = BuildStandings(_currentTournament);
             (_canGenerateNewRound, _newRoundDisabledReason) = EvaluateNewRoundAvailability(_currentTournament, _standings);
         }
@@ -399,7 +413,7 @@
         }
 
         var generatedOnUtc = DateTime.UtcNow;
-        var rounds = BuildRounds(_matchingMode, seeded, generatedOnUtc);
+        var rounds = BuildRounds(_matchingMode, _unmatchedPlayerResult, seeded, generatedOnUtc);
         if (rounds.Count == 0)
         {
             Snackbar.Add("Could not generate a tournament for this configuration.", Severity.Error);
@@ -411,6 +425,7 @@
             TournamentId = Guid.NewGuid(),
             MatchingMode = _matchingMode,
             RankMetric = _rankMetric,
+            UnmatchedPlayerResult = _unmatchedPlayerResult,
             GeneratedOnUtc = generatedOnUtc,
             CompletedOnUtc = null,
             Seeds = seeded,
@@ -659,6 +674,7 @@
 
     private static List<TournamentRoundSnapshot> BuildRounds(
         TournamentMatchingMode matchingMode,
+        TournamentUnmatchedPlayerResult unmatchedPlayerResult,
         IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
         DateTime generatedOnUtc)
     {
@@ -666,6 +682,7 @@
         {
             TournamentId = Guid.NewGuid(),
             MatchingMode = matchingMode,
+            UnmatchedPlayerResult = unmatchedPlayerResult,
             GeneratedOnUtc = generatedOnUtc,
             Seeds = seededPlayers.Select(seed => seed with { }).ToList(),
             Rounds = new List<TournamentRoundSnapshot>()
@@ -741,7 +758,8 @@
         IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
         IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents,
         IReadOnlyDictionary<Guid, bool> hasBye,
-        DateTime generatedOnUtc)
+        DateTime generatedOnUtc,
+        TournamentUnmatchedPlayerResult unmatchedPlayerResult)
     {
         if (seededPlayers.Count == 0)
         {
@@ -778,7 +796,7 @@
 
         if (byePlayer is not null)
         {
-            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc));
+            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc, unmatchedPlayerResult: unmatchedPlayerResult));
         }
 
         return matches;
@@ -1079,9 +1097,9 @@
         var matches = tournament.MatchingMode switch
         {
             TournamentMatchingMode.Knockout => new List<TournamentMatchSnapshot>(),
-            TournamentMatchingMode.RoundRobin => BuildRoundRobinRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc),
-            TournamentMatchingMode.MonradSwiss => BuildMonradRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc),
-            _ => BuildClassicSwissRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc)
+            TournamentMatchingMode.RoundRobin => BuildRoundRobinRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc, tournament.UnmatchedPlayerResult),
+            TournamentMatchingMode.MonradSwiss => BuildMonradRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc, tournament.UnmatchedPlayerResult),
+            _ => BuildClassicSwissRound(seededPlayers, BuildPreviousOpponents(tournament), BuildByeHistory(tournament), generatedOnUtc, tournament.UnmatchedPlayerResult)
         };
 
         return matches.Count == 0
@@ -1097,7 +1115,8 @@
         IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
         IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents,
         IReadOnlyDictionary<Guid, bool> hasBye,
-        DateTime generatedOnUtc)
+        DateTime generatedOnUtc,
+        TournamentUnmatchedPlayerResult unmatchedPlayerResult)
     {
         var ordered = seededPlayers.ToList();
         TournamentSeedSnapshot? byePlayer = null;
@@ -1121,7 +1140,7 @@
 
         if (byePlayer is not null)
         {
-            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc));
+            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc, unmatchedPlayerResult: unmatchedPlayerResult));
         }
 
         return matches;
@@ -1131,7 +1150,8 @@
         IReadOnlyList<TournamentSeedSnapshot> seededPlayers,
         IReadOnlyDictionary<Guid, HashSet<Guid>> previousOpponents,
         IReadOnlyDictionary<Guid, bool> hasBye,
-        DateTime generatedOnUtc)
+        DateTime generatedOnUtc,
+        TournamentUnmatchedPlayerResult unmatchedPlayerResult)
     {
         var ordered = seededPlayers.ToList();
         TournamentSeedSnapshot? byePlayer = null;
@@ -1159,7 +1179,7 @@
 
         if (byePlayer is not null)
         {
-            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc));
+            matches.Add(BuildMatch(tableNumber, byePlayer, null, generatedOnUtc, unmatchedPlayerResult: unmatchedPlayerResult));
         }
 
         return matches;
@@ -1238,9 +1258,11 @@
         TournamentSeedSnapshot playerA,
         TournamentSeedSnapshot? playerB,
         DateTime generatedOnUtc,
-        string? matchLabel = null)
+        string? matchLabel = null,
+        TournamentUnmatchedPlayerResult unmatchedPlayerResult = TournamentUnmatchedPlayerResult.AutoWin)
     {
         var isBye = playerB is null;
+        var isAutomaticWin = isBye && unmatchedPlayerResult == TournamentUnmatchedPlayerResult.AutoWin;
 
         return new TournamentMatchSnapshot
         {
@@ -1258,8 +1280,8 @@
             PlayerBSourceMatchId = null,
             PlayerBSourceType = null,
             IsBye = isBye,
-            ResultForPlayerA = isBye ? MatchResult.Win : null,
-            ReportedOnUtc = isBye ? generatedOnUtc : null,
+            ResultForPlayerA = isAutomaticWin ? MatchResult.Win : null,
+            ReportedOnUtc = isAutomaticWin ? generatedOnUtc : null,
             RecordedMatchId = null
         };
     }
@@ -1286,8 +1308,12 @@
 
             if (match.IsBye)
             {
-                rowA.Wins++;
-                rowA.Points += 3;
+                if (match.ResultForPlayerA == MatchResult.Win)
+                {
+                    rowA.Wins++;
+                    rowA.Points += 3;
+                }
+
                 continue;
             }
 
@@ -1333,7 +1359,7 @@
 
     private static bool IsPlayerAWinner(TournamentMatchSnapshot match)
     {
-        return match.ResultForPlayerA == MatchResult.Win || match.IsBye;
+        return match.ResultForPlayerA == MatchResult.Win;
     }
 
     private static bool IsPlayerBWinner(TournamentMatchSnapshot match)
@@ -1345,7 +1371,7 @@
     {
         if (match.IsBye)
         {
-            return Color.Success;
+            return match.ResultForPlayerA == MatchResult.Win ? Color.Success : Color.Default;
         }
 
         return match.ResultForPlayerA switch
@@ -1361,7 +1387,9 @@
     {
         if (match.IsBye)
         {
-            return $"{match.PlayerAName} receives a bye";
+            return match.ResultForPlayerA == MatchResult.Win
+                ? $"{match.PlayerAName} receives an automatic win"
+                : $"{match.PlayerAName} has no match (no score change)";
         }
 
         if (!IsMatchReadyToPlay(match))
@@ -1441,6 +1469,13 @@
         };
     }
 
+    private static string GetUnmatchedPlayerResultLabel(TournamentUnmatchedPlayerResult unmatchedPlayerResult)
+    {
+        return unmatchedPlayerResult == TournamentUnmatchedPlayerResult.AutoWin
+            ? "automatic win"
+            : "no score or point change";
+    }
+
     private static string GetArchivedRoundSummary(TournamentRoundSnapshot round)
     {
         return string.Join(" | ", round.Matches
@@ -1452,7 +1487,9 @@
                     : $"{match.MatchLabel}: ";
 
                 return match.IsBye
-                    ? $"{prefix}{match.PlayerAName} bye"
+                    ? match.ResultForPlayerA == MatchResult.Win
+                        ? $"{prefix}{match.PlayerAName} automatic win"
+                        : $"{prefix}{match.PlayerAName} no match (no score change)"
                     : $"{prefix}{match.PlayerAName} vs {match.PlayerBName} ({GetArchivedMatchOutcome(match)})";
             }));
     }
@@ -1486,8 +1523,12 @@
 
                 if (match.IsBye)
                 {
-                    rowA.Wins++;
-                    rowA.Points += 3;
+                    if (match.ResultForPlayerA == MatchResult.Win)
+                    {
+                        rowA.Wins++;
+                        rowA.Points += 3;
+                    }
+
                     return rows;
                 }
 

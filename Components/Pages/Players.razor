@@ -57,7 +57,7 @@
                         <MudTh Style="text-align: right;">
                             <MudTableSortLabel T="Player"
                                                SortBy="@(new Func<Player, object>(player => GetSummary(player.Id).Score))">
-                                Score
+                                ELO
                             </MudTableSortLabel>
                         </MudTh>
                     }
@@ -119,7 +119,7 @@
                     </MudTd>
                     @if (IsPointsEnabled)
                     {
-                        <MudTd DataLabel="Score" Style="text-align: right;">@summary.Score</MudTd>
+                        <MudTd DataLabel="ELO" Style="text-align: right;">@summary.Score</MudTd>
                     }
                     <MudTd DataLabel="Matches" Style="text-align: right;">@summary.MatchesPlayed</MudTd>
                     <MudTd DataLabel="Wins" Style="text-align: right;">@summary.Wins</MudTd>

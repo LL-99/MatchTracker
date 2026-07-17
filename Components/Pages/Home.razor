@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @implements IDisposable
 
 @inject MatchTrackerService Tracker
@@ -72,7 +72,7 @@
 								<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
 								@if (IsPointsEnabled)
 								{
-									<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
+									<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} ELO")</MudChip>
 								}
 							</MudStack>
 							<MudDivider Class="my-2" />
@@ -114,7 +114,7 @@
 				<MudSelectItem Value="@OverviewSortMode.ByWins">By Wins</MudSelectItem>
 				@if (IsPointsEnabled)
 				{
-					<MudSelectItem Value="@OverviewSortMode.ByPoints">By PT</MudSelectItem>
+					<MudSelectItem Value="@OverviewSortMode.ByPoints">By ELO</MudSelectItem>
 				}
 			</MudSelect>
 		</MudStack>
@@ -131,7 +131,7 @@
 							<MudChip Variant="Variant.Filled" T="string">@player.WinRateLabel</MudChip>
 							@if (IsPointsEnabled)
 							{
-								<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} PT")</MudChip>
+								<MudChip Variant="Variant.Filled" Color="Color.Info" Class="player-cell-score" T="string">@($"{player.Score} ELO")</MudChip>
 							}
 						</MudStack>
 						<MudDivider Class="my-2" />

@@ -1,0 +1,12 @@
+.points-config-page {
+    margin: 0 auto;
+    max-width: 56rem;
+}
+
+.points-config-card {
+    border: 1px solid var(--mud-palette-lines-default);
+}
+
+.points-formula {
+    background: rgba(15, 23, 42, 0.4);
+}

@@ -7,6 +7,7 @@ namespace MatchTracker.Services;
 public sealed class MatchTrackerService
 {
     private const string LocalStorageKey = "matchtracker.state.v1";
+    private const int CurrentSchemaVersion = 6;
     private const int TournamentHistoryLimit = 100;
     private readonly object _sync = new();
     private MatchTrackerState _state = new();
@@ -26,9 +27,10 @@ public sealed class MatchTrackerService
         try
         {
             var serializedState = await jsRuntime.InvokeAsync<string?>("localStorage.getItem", LocalStorageKey);
-            if (!TryDeserializeState(serializedState, out var loadedState))
+            if (!TryDeserializeState(serializedState, out var loadedState, out var stateWasMigrated))
             {
                 loadedState = new MatchTrackerState();
+                stateWasMigrated = false;
             }
 
             lock (_sync)
@@ -40,6 +42,11 @@ public sealed class MatchTrackerService
 
                 _state = loadedState;
                 _isInitialized = true;
+            }
+
+            if (stateWasMigrated)
+            {
+                await PersistAsync(jsRuntime);
             }
         }
         catch (Exception ex)
@@ -69,7 +76,7 @@ public sealed class MatchTrackerService
             return false;
         }
 
-        if (!TryDeserializeState(serializedState, out var importedState))
+        if (!TryDeserializeState(serializedState, out var importedState, out _))
         {
             errorMessage = "Invalid JSON file format.";
             return false;
@@ -90,8 +97,41 @@ public sealed class MatchTrackerService
     {
         lock (_sync)
         {
-            return _state.UsePoints;
+            return _state.PointsConfiguration.UsePoints;
         }
+    }
+
+    public PointsConfiguration GetPointsConfiguration()
+    {
+        lock (_sync)
+        {
+            return _state.PointsConfiguration with { };
+        }
+    }
+
+    public bool TrySavePointsConfiguration(PointsConfiguration? configuration, out string errorMessage)
+    {
+        if (configuration is null)
+        {
+            errorMessage = "Point configuration is required.";
+            return false;
+        }
+
+        if (configuration.StartingPoints < 0)
+        {
+            errorMessage = "Starting points cannot be negative.";
+            return false;
+        }
+
+        lock (_sync)
+        {
+            _state.PointsConfiguration = configuration with { };
+            _state.UsePoints = configuration.UsePoints;
+        }
+
+        OptionsChanged?.Invoke();
+        errorMessage = string.Empty;
+        return true;
     }
 
     public bool SetPointsEnabled(bool isEnabled)
@@ -100,8 +140,9 @@ public sealed class MatchTrackerService
 
         lock (_sync)
         {
-            if (_state.UsePoints != isEnabled)
+            if (_state.PointsConfiguration.UsePoints != isEnabled)
             {
+                _state.PointsConfiguration = _state.PointsConfiguration with { UsePoints = isEnabled };
                 _state.UsePoints = isEnabled;
                 changed = true;
             }
@@ -452,7 +493,8 @@ public sealed class MatchTrackerService
                     }
                 }
 
-                summaries.Add(new PlayerSummary(player.Id, player.Name, player.Active, wins, losses, draws));
+                var score = CalculatePoints(wins, losses, draws, _state.PointsConfiguration);
+                summaries.Add(new PlayerSummary(player.Id, player.Name, player.Active, wins, losses, draws, score));
             }
 
             return summaries;
@@ -826,6 +868,7 @@ public sealed class MatchTrackerService
             {
                 SchemaVersion = _state.SchemaVersion,
                 UsePoints = _state.UsePoints,
+                PointsConfiguration = _state.PointsConfiguration with { },
                 Players = _state.Players.ToList(),
                 Matches = _state.Matches.ToList(),
                 CurrentTournament = _state.CurrentTournament is null
@@ -839,11 +882,15 @@ public sealed class MatchTrackerService
         }
     }
 
-    private static bool TryDeserializeState(string? serializedState, out MatchTrackerState state)
+    private static bool TryDeserializeState(
+        string? serializedState,
+        out MatchTrackerState state,
+        out bool stateWasMigrated)
     {
         if (string.IsNullOrWhiteSpace(serializedState))
         {
             state = new MatchTrackerState();
+            stateWasMigrated = false;
             return true;
         }
 
@@ -853,15 +900,19 @@ public sealed class MatchTrackerService
             if (parsedState is null)
             {
                 state = new MatchTrackerState();
+                stateWasMigrated = false;
                 return false;
             }
 
+            stateWasMigrated = parsedState.SchemaVersion < CurrentSchemaVersion
+                || parsedState.PointsConfiguration is null;
             state = SanitizeState(parsedState);
             return true;
         }
         catch (JsonException)
         {
             state = new MatchTrackerState();
+            stateWasMigrated = false;
             return false;
         }
     }
@@ -871,7 +922,14 @@ public sealed class MatchTrackerService
         parsedState.Players ??= new List<Player>();
         parsedState.Matches ??= new List<MatchRecord>();
         parsedState.TournamentHistory ??= new List<TournamentHistorySummary>();
-        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, 4);
+        var loadedSchemaVersion = parsedState.SchemaVersion;
+        parsedState.SchemaVersion = Math.Max(parsedState.SchemaVersion, CurrentSchemaVersion);
+        var pointsConfiguration = loadedSchemaVersion switch
+        {
+            < 5 => PointsConfiguration.CreateDefault(parsedState.UsePoints),
+            < CurrentSchemaVersion => MigrateLegacyPointsConfiguration(parsedState.PointsConfiguration, parsedState.UsePoints),
+            _ => SanitizePointsConfiguration(parsedState.PointsConfiguration, parsedState.UsePoints)
+        };
 
         var players = parsedState.Players
             .Where(player => player.Id != Guid.Empty)
@@ -934,13 +992,69 @@ public sealed class MatchTrackerService
         return new MatchTrackerState
         {
             SchemaVersion = parsedState.SchemaVersion,
-            UsePoints = parsedState.UsePoints,
+            UsePoints = pointsConfiguration.UsePoints,
+            PointsConfiguration = pointsConfiguration,
             Players = players,
             Matches = matches,
             CurrentTournament = tournament,
             TournamentHistory = history,
             LegacyTournamentBracket = null
         };
+    }
+
+    private static PointsConfiguration SanitizePointsConfiguration(
+        PointsConfiguration? configuration,
+        bool legacyUsePoints)
+    {
+        if (configuration is null)
+        {
+            return PointsConfiguration.CreateDefault(legacyUsePoints);
+        }
+
+        return configuration with
+        {
+            StartingPoints = Math.Max(configuration.StartingPoints, 0),
+            LegacyPointsGainedOnWin = null,
+            LegacyPointsLostOnLoss = null,
+            LegacyPointsChangeOnDraw = null
+        };
+    }
+
+    private static PointsConfiguration MigrateLegacyPointsConfiguration(
+        PointsConfiguration? configuration,
+        bool legacyUsePoints)
+    {
+        if (configuration is null)
+        {
+            return PointsConfiguration.CreateDefault(legacyUsePoints);
+        }
+
+        return new PointsConfiguration
+        {
+            UsePoints = configuration.UsePoints,
+            StartingPoints = Math.Max(configuration.StartingPoints, 0),
+            PointChangeOnWin = configuration.LegacyPointsGainedOnWin
+                ?? PointsConfiguration.DefaultPointChangeOnWin,
+            PointChangeOnLoss = configuration.LegacyPointsLostOnLoss.HasValue
+                ? -configuration.LegacyPointsLostOnLoss.Value
+                : PointsConfiguration.DefaultPointChangeOnLoss,
+            PointChangeOnDraw = configuration.LegacyPointsChangeOnDraw
+                ?? PointsConfiguration.DefaultPointChangeOnDraw
+        };
+    }
+
+    private static int CalculatePoints(
+        int wins,
+        int losses,
+        int draws,
+        PointsConfiguration configuration)
+    {
+        var total = (long)configuration.StartingPoints
+            + ((long)wins * configuration.PointChangeOnWin)
+            + ((long)losses * configuration.PointChangeOnLoss)
+            + ((long)draws * configuration.PointChangeOnDraw);
+
+        return (int)Math.Clamp(total, int.MinValue, int.MaxValue);
     }
 
     private static TournamentSnapshot CloneTournament(TournamentSnapshot tournament)
@@ -950,6 +1064,7 @@ public sealed class MatchTrackerService
             TournamentId = tournament.TournamentId,
             MatchingMode = tournament.MatchingMode,
             RankMetric = tournament.RankMetric,
+            UnmatchedPlayerResult = tournament.UnmatchedPlayerResult,
             GeneratedOnUtc = tournament.GeneratedOnUtc,
             CompletedOnUtc = tournament.CompletedOnUtc,
             Seeds = tournament.Seeds.Select(seed => seed with { }).ToList(),
@@ -1005,6 +1120,10 @@ public sealed class MatchTrackerService
         var rankMetric = Enum.IsDefined(parsedTournament.RankMetric)
             ? parsedTournament.RankMetric
             : TournamentRankMetric.WinRate;
+
+        var unmatchedPlayerResult = Enum.IsDefined(parsedTournament.UnmatchedPlayerResult)
+            ? parsedTournament.UnmatchedPlayerResult
+            : TournamentUnmatchedPlayerResult.AutoWin;
 
         var generatedOnUtc = NormalizeUtc(parsedTournament.GeneratedOnUtc);
         DateTime? completedOnUtc = parsedTournament.CompletedOnUtc.HasValue
@@ -1086,6 +1205,7 @@ public sealed class MatchTrackerService
             TournamentId = tournamentId,
             MatchingMode = matchingMode,
             RankMetric = rankMetric,
+            UnmatchedPlayerResult = unmatchedPlayerResult,
             GeneratedOnUtc = generatedOnUtc,
             CompletedOnUtc = completedOnUtc,
             Seeds = seeds,
@@ -1152,7 +1272,7 @@ public sealed class MatchTrackerService
         }
         else
         {
-            result = MatchResult.Win;
+            result = result == MatchResult.Win ? MatchResult.Win : null;
         }
 
         if (playerAId == Guid.Empty || (!isBye && playerBId is null))
@@ -1270,6 +1390,7 @@ public sealed class MatchTrackerService
             TournamentId = summary.TournamentId,
             MatchingMode = summary.MatchingMode,
             RankMetric = summary.RankMetric,
+            UnmatchedPlayerResult = summary.UnmatchedPlayerResult,
             GeneratedOnUtc = summary.GeneratedOnUtc,
             ArchivedOnUtc = summary.ArchivedOnUtc,
             CompletedOnUtc = summary.CompletedOnUtc,
@@ -1333,6 +1454,10 @@ public sealed class MatchTrackerService
             ? parsedSummary.RankMetric
             : TournamentRankMetric.WinRate;
 
+        var unmatchedPlayerResult = Enum.IsDefined(parsedSummary.UnmatchedPlayerResult)
+            ? parsedSummary.UnmatchedPlayerResult
+            : TournamentUnmatchedPlayerResult.AutoWin;
+
         var winnerName = (parsedSummary.WinnerName ?? string.Empty).Trim();
         parsedSummary.Rounds ??= new List<TournamentRoundSnapshot>();
         var roundSeedOrder = parsedSummary.Rounds
@@ -1370,6 +1495,7 @@ public sealed class MatchTrackerService
             TournamentId = tournamentId,
             MatchingMode = matchingMode,
             RankMetric = rankMetric,
+            UnmatchedPlayerResult = unmatchedPlayerResult,
             GeneratedOnUtc = NormalizeUtc(parsedSummary.GeneratedOnUtc),
             ArchivedOnUtc = NormalizeUtc(parsedSummary.ArchivedOnUtc),
             CompletedOnUtc = parsedSummary.CompletedOnUtc.HasValue
@@ -1477,8 +1603,16 @@ public sealed class MatchTrackerService
                         match.RecordedMatchId = null;
                     }
 
-                    match.ResultForPlayerA = MatchResult.Win;
-                    match.ReportedOnUtc ??= tournamentSnapshot.GeneratedOnUtc;
+                    if (tournamentSnapshot.UnmatchedPlayerResult == TournamentUnmatchedPlayerResult.AutoWin)
+                    {
+                        match.ResultForPlayerA = MatchResult.Win;
+                        match.ReportedOnUtc ??= tournamentSnapshot.GeneratedOnUtc;
+                    }
+                    else
+                    {
+                        match.ResultForPlayerA = null;
+                        match.ReportedOnUtc = null;
+                    }
                 }
                 else if (match.PlayerAId == Guid.Empty || !match.PlayerBId.HasValue || match.PlayerBId.Value == Guid.Empty)
                 {
@@ -1610,8 +1744,18 @@ public sealed class MatchTrackerService
     {
         foreach (var tournamentMatch in tournamentSnapshot.Rounds.SelectMany(round => round.Matches))
         {
-            if (tournamentMatch.IsBye
-                || tournamentMatch.PlayerAId == Guid.Empty
+            if (tournamentMatch.IsBye)
+            {
+                if (tournamentMatch.RecordedMatchId.HasValue)
+                {
+                    matches.RemoveAll(match => match.Id == tournamentMatch.RecordedMatchId.Value);
+                    tournamentMatch.RecordedMatchId = null;
+                }
+
+                continue;
+            }
+
+            if (tournamentMatch.PlayerAId == Guid.Empty
                 || !tournamentMatch.PlayerBId.HasValue
                 || tournamentMatch.PlayerBId.Value == Guid.Empty)
             {
@@ -1675,6 +1819,7 @@ public sealed class MatchTrackerService
             TournamentId = tournamentSnapshot.TournamentId,
             MatchingMode = tournamentSnapshot.MatchingMode,
             RankMetric = tournamentSnapshot.RankMetric,
+            UnmatchedPlayerResult = tournamentSnapshot.UnmatchedPlayerResult,
             GeneratedOnUtc = tournamentSnapshot.GeneratedOnUtc,
             CompletedOnUtc = tournamentSnapshot.CompletedOnUtc,
             Seeds = tournamentSnapshot.Seeds.Select(seed => seed with { }).ToList(),
@@ -1701,6 +1846,7 @@ public sealed class MatchTrackerService
             TournamentId = tournamentSnapshot.TournamentId,
             MatchingMode = tournamentSnapshot.MatchingMode,
             RankMetric = tournamentSnapshot.RankMetric,
+            UnmatchedPlayerResult = tournamentSnapshot.UnmatchedPlayerResult,
             GeneratedOnUtc = tournamentSnapshot.GeneratedOnUtc,
             ArchivedOnUtc = NormalizeUtc(archivedOnUtc),
             CompletedOnUtc = tournamentSnapshot.CompletedOnUtc,
@@ -1807,8 +1953,12 @@ public sealed class MatchTrackerService
 
             if (match.IsBye)
             {
-                rowA.Wins++;
-                rowA.Points += 3;
+                if (match.ResultForPlayerA == MatchResult.Win)
+                {
+                    rowA.Wins++;
+                    rowA.Points += 3;
+                }
+
                 continue;
             }
 
@@ -1908,8 +2058,9 @@ public sealed class MatchTrackerService
 
 public sealed class MatchTrackerState
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 6;
     public bool UsePoints { get; set; } = true;
+    public PointsConfiguration PointsConfiguration { get; set; } = new();
     public List<Player> Players { get; set; } = new();
     public List<MatchRecord> Matches { get; set; } = new();
     public TournamentSnapshot? CurrentTournament { get; set; }
@@ -1917,6 +2068,34 @@ public sealed class MatchTrackerState
 
     [JsonProperty("tournamentBracket")]
     public TournamentBracketSnapshot? LegacyTournamentBracket { get; set; }
+}
+
+public sealed record PointsConfiguration
+{
+    public const int DefaultStartingPoints = 100;
+    public const int DefaultPointChangeOnWin = 20;
+    public const int DefaultPointChangeOnLoss = -15;
+    public const int DefaultPointChangeOnDraw = -5;
+
+    public bool UsePoints { get; set; } = true;
+    public int StartingPoints { get; set; } = DefaultStartingPoints;
+    public int PointChangeOnWin { get; set; } = DefaultPointChangeOnWin;
+    public int PointChangeOnLoss { get; set; } = DefaultPointChangeOnLoss;
+    public int PointChangeOnDraw { get; set; } = DefaultPointChangeOnDraw;
+
+    [JsonProperty("pointsGainedOnWin", NullValueHandling = NullValueHandling.Ignore)]
+    public int? LegacyPointsGainedOnWin { get; set; }
+
+    [JsonProperty("pointsLostOnLoss", NullValueHandling = NullValueHandling.Ignore)]
+    public int? LegacyPointsLostOnLoss { get; set; }
+
+    [JsonProperty("pointsChangeOnDraw", NullValueHandling = NullValueHandling.Ignore)]
+    public int? LegacyPointsChangeOnDraw { get; set; }
+
+    public static PointsConfiguration CreateDefault(bool usePoints = true)
+    {
+        return new PointsConfiguration { UsePoints = usePoints };
+    }
 }
 
 public sealed record Player
@@ -1943,15 +2122,15 @@ public sealed record PlayerSummary(
     bool Active,
     int Wins,
     int Losses,
-    int Draws)
+    int Draws,
+    int Score = PointsConfiguration.DefaultStartingPoints)
 {
-    public const int StartingScore = 100;
-    public const int WinPoints = 20;
-    public const int DrawPenalty = 5;
-    public const int LossPenalty = 15;
+    public const int StartingScore = PointsConfiguration.DefaultStartingPoints;
+    public const int WinPoints = PointsConfiguration.DefaultPointChangeOnWin;
+    public const int DrawPenalty = -PointsConfiguration.DefaultPointChangeOnDraw;
+    public const int LossPenalty = -PointsConfiguration.DefaultPointChangeOnLoss;
 
     public int MatchesPlayed => Wins + Losses + Draws;
-    public int Score => StartingScore + (Wins * WinPoints) - (Draws * DrawPenalty) - (Losses * LossPenalty);
     public double WinRate => MatchesPlayed == 0 ? 0d : (double)Wins / MatchesPlayed;
     public int WinRatePercent => (int)Math.Round(WinRate * 100, MidpointRounding.AwayFromZero);
     public string WinRateLabel => $"{WinRatePercent}% WR";
@@ -1986,11 +2165,18 @@ public enum TournamentRankMetric
     Random
 }
 
+public enum TournamentUnmatchedPlayerResult
+{
+    AutoWin,
+    NoScoreChange
+}
+
 public sealed class TournamentSnapshot
 {
     public Guid TournamentId { get; set; } = Guid.NewGuid();
     public TournamentMatchingMode MatchingMode { get; set; } = TournamentMatchingMode.ClassicSwissStage;
     public TournamentRankMetric RankMetric { get; set; } = TournamentRankMetric.WinRate;
+    public TournamentUnmatchedPlayerResult UnmatchedPlayerResult { get; set; } = TournamentUnmatchedPlayerResult.AutoWin;
     public DateTime GeneratedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedOnUtc { get; set; }
     public List<TournamentSeedSnapshot> Seeds { get; set; } = new();
@@ -2029,6 +2215,7 @@ public sealed class TournamentHistorySummary
     public Guid TournamentId { get; set; }
     public TournamentMatchingMode MatchingMode { get; set; }
     public TournamentRankMetric RankMetric { get; set; }
+    public TournamentUnmatchedPlayerResult UnmatchedPlayerResult { get; set; } = TournamentUnmatchedPlayerResult.AutoWin;
     public DateTime GeneratedOnUtc { get; set; }
     public DateTime ArchivedOnUtc { get; set; }
     public DateTime? CompletedOnUtc { get; set; }
